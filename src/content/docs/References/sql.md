@@ -155,7 +155,7 @@ WITH decoded AS (
       'EventName(param1_type indexed param1_name,param2_type param2_name,...)'
     ) AS event
   FROM eth_firehose.logs l
-  WHERE l.address = arrow_cast(x'CONTRACT_ADDRESS_HEX', 'FixedSizeBinary(20)')
+  WHERE l.address = x'CONTRACT_ADDRESS_HEX'
     AND l.topic0 = evm_topic('EventName(param1_type,param2_type,...)')
 )
 SELECT
@@ -205,7 +205,7 @@ FROM decoded
 ### Single Contract
 
 ```sql
-WHERE l.address = arrow_cast(x'CONTRACT_HEX', 'FixedSizeBinary(20)')
+WHERE l.address = x'CONTRACT_HEX'
   AND l.topic0 = evm_topic('EventName(...)')
 ```
 
@@ -232,9 +232,9 @@ WHERE l.address = arrow_cast(x'CONTRACT_HEX', 'FixedSizeBinary(20)')
 ### Filter by Indexed Parameter
 
 ```sql
-WHERE l.address = arrow_cast(x'CONTRACT_HEX', 'FixedSizeBinary(20)')
+WHERE l.address = x'CONTRACT_HEX'
   AND l.topic0 = evm_topic('Transfer(address,address,uint256)')
-  AND l.topic1 = arrow_cast(x'FROM_ADDRESS_HEX', 'FixedSizeBinary(32)')
+  AND l.topic1 = x'FROM_ADDRESS_HEX'
 ```
 
 > Indexed addresses are 32-byte padded.
@@ -256,33 +256,7 @@ event['token_amounts']    -- Returns array as-is
 event['fees']             -- Returns array as-is
 ```
 
-Dynamic arrays use `List` instead of `FixedSizeList`.
-
-**Schema for arrays:**
-
-```json
-{
-  "name": "token_amounts",
-  "type": {
-    "FixedSizeList": [
-      {
-        "name": "item",
-        "data_type": "Utf8",
-        "nullable": true,
-        "dict_id": 0,
-        "dict_is_ordered": false,
-        "metadata": {}
-      },
-      2
-    ]
-  },
-  "nullable": true
-}
-```
-
 ## Type Safety Tips
-
-### When to Use Utf8 vs UInt64
 
 | Data                          | Type                  | Reason                                |
 | ----------------------------- | --------------------- | ------------------------------------- |
@@ -293,53 +267,25 @@ Dynamic arrays use `List` instead of `FixedSizeList`.
 | Addresses                     | `FixedSizeBinary(20)` | 20 bytes                              |
 | Transaction hashes            | `FixedSizeBinary(32)` | 32 bytes                              |
 
-### Nullable Fields
+### Using Decimal Types for Large Numbers
 
-**From event data:** Usually `nullable: true`
+For arithmetic operations on large integers, use Decimal or Double types:
 
-```json
-{
-  "name": "reserve",
-  "type": { "FixedSizeBinary": 20 },
-  "nullable": true
-}
-```
-
-**System fields:** Usually `nullable: false`
-
-```json
-{
-  "name": "block_num",
-  "type": "UInt64",
-  "nullable": false
-}
-```
-
-## Common Mistakes
-
-### Incorrect
+| Solidity Type | Decimal Type       | Notes            |
+| ------------- | ------------------ | ---------------- |
+| uint128       | `Decimal128(38,0)` | Up to 38 digits  |
+| uint256       | `Decimal256(76,0)` | Up to 76 digits  |
 
 ```sql
-SELECT _block_num
+-- Cast Utf8 to Decimal for arithmetic
+SELECT
+  arrow_cast(token_amount, 'Decimal256(76,0)') * price AS value
+FROM transfers
 ```
 
-### Correct
+The `0` scale means no decimal places (integer math).
 
-```sql
-SELECT block_num
-```
-
-### Incorrect Signature
-
-```sql
-evm_topic('Transfer(address indexed from, address indexed to, uint256 value)')
-```
-
-### Correct
-
-```sql
-evm_topic('Transfer(address,address,uint256)')
-```
+There is no perfect conversion of Solidity uint256 to Arrow. `Decimal256(76,0)` preserves full precision, however does not capture the full numeric range of the binary Solidity uint256. Any realistic monetary value will fit in a `Decimal256`, but if your uint256 is a random identifier it might be best represented as `Utf8`. FLOAT or DOUBLE can lose precision but may be suitable for aggregations.
 
 ### Mismatched Signature in decode
 
@@ -368,7 +314,7 @@ WHERE l.address = '0x1234...'  -- String literal
 ### Correct Type
 
 ```sql
-WHERE l.address = arrow_cast(x'1234...', 'FixedSizeBinary(20)')  --
+WHERE l.address = x'1234...'
 ```
 
 ## Advanced Patterns
@@ -410,19 +356,6 @@ FROM (
 WHERE amount_numeric > 1000
 ```
 
-## Validation Checklist
-
-Before deploying a query:
-
-- [ ] Event signature in `evm_topic()` matches contract ABI
-- [ ] `indexed` parameters in `evm_decode()` match ABI
-- [ ] `evm_decode()` parameter order matches ABI
-- [ ] Contract addresses use `arrow_cast(x'...', 'FixedSizeBinary(20)')`
-- [ ] `_block_num` NOT in SELECT clause
-- [ ] All event field accesses use bracket notation: `event['field']`
-- [ ] Type casts match schema definitions
-- [ ] Array types have correct size/structure
-
 ## Quick Examples
 
 ### Transfer Event
@@ -439,7 +372,7 @@ WITH decoded AS (
       'Transfer(address indexed from,address indexed to,uint256 value)'
     ) AS event
   FROM eth_firehose.logs l
-  WHERE l.address = arrow_cast(x'TOKEN_ADDRESS', 'FixedSizeBinary(20)')
+  WHERE l.address = x'TOKEN_ADDRESS'
     AND l.topic0 = evm_topic('Transfer(address,address,uint256)')
 )
 SELECT
@@ -467,7 +400,7 @@ WITH decoded AS (
       'Swap(address indexed sender,uint256 amount0In,uint256 amount1In,uint256 amount0Out,uint256 amount1Out,address indexed to)'
     ) AS event
   FROM eth_firehose.logs l
-  WHERE l.address = arrow_cast(x'PAIR_ADDRESS', 'FixedSizeBinary(20)')
+  WHERE l.address = x'PAIR_ADDRESS'
     AND l.topic0 = evm_topic('Swap(address,uint256,uint256,uint256,uint256,address)')
 )
 SELECT
@@ -482,40 +415,4 @@ SELECT
   event['amount1Out'] AS amount1_out,
   arrow_cast(event['to'], 'FixedSizeBinary(20)') AS to_address
 FROM decoded
-```
-
-## Getting Event Signatures
-
-### Etherscan
-
-1. Open contract page
-2. Click "Contract" tab
-3. View "Events" section in ABI
-4. Copy event signature
-
-### From ABI
-
-```json
-{
-  "anonymous": false,
-  "inputs": [
-    { "indexed": true, "name": "from", "type": "address" },
-    { "indexed": true, "name": "to", "type": "address" },
-    { "indexed": false, "name": "value", "type": "uint256" }
-  ],
-  "name": "Transfer",
-  "type": "event"
-}
-```
-
-**Convert to signature:**
-
-```
-Transfer(address indexed from,address indexed to,uint256 value)
-```
-
-**Convert to topic:**
-
-```
-Transfer(address,address,uint256)
 ```
