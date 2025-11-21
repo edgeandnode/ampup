@@ -1,8 +1,8 @@
 ---
 title: SQL UDF
 description: Understand SQL references
-slug: reference/sqludf
-category: reference
+slug: references/sqludf
+category: references
 ---
 
 A concise reference for SQL syntax and UDFs used in Amp dataset queries.

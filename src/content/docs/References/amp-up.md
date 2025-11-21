@@ -1,8 +1,8 @@
 ---
 title: Ampup
 description: Overview of Ampup Core Concepts
-slug: /references/ampup
-category: reference
+slug: references/ampup
+category: references
 ---
 
 This page provides factual definitions, syntax, configuration fields, commands, and dataset behaviors for Amp. Use it when you need precise detail about how Amp works or how to configure datasets.

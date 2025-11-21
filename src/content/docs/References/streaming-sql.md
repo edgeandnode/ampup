@@ -1,8 +1,8 @@
 ---
 title: Streaming SQL
 description: Understand SQL streaming
-slug: reference/sqlstreaming
-category: reference
+slug: references/sqlstreaming
+category: references
 ---
 
 # Streaming SQL in Amp

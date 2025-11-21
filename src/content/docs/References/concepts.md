@@ -1,8 +1,8 @@
 ---
 title: Concepts
 description: Overview of Amp Basics
-slug: /references/concepts
-category: reference
+slug: references/concepts
+category: references
 ---
 
 ## Overview
