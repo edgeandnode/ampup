@@ -22,19 +22,19 @@ Make sure you have Docker running. Then install:
 
 > Verify with node `--version` and pnpm `--version`. Older versions may cause issues.
 
-# Foundry
+### Foundry
 
 ```bash
 curl -L https://foundry.paradigm.xyz | bash && foundryup
 ```
 
-# Just (task runner)
+### Just (task runner)
 
 ```bash
 cargo install just
 ```
 
-# Amp CLI
+### Amp CLI
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://ampup.sh/install | sh
