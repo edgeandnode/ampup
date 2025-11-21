@@ -1,7 +1,7 @@
 ---
 title: Ampup
 description: Overview of Ampup Core Concepts
-slug: /references/ampup/concepts
+slug: /references/ampup
 category: reference
 ---
 
