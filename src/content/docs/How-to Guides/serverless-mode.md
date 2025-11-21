@@ -3,7 +3,7 @@ title: How to Extract Data Using Serverless Mode
 description: Learn how to run a one-off extraction
 slug: how-to/serverless-extraction
 command: ampd dump
-category: extraction
+category: how-to-guide
 ---
 
 ## Goal

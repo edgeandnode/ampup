@@ -2,7 +2,7 @@
 title: How to Run Amp in Development Mode
 slug: how-to/dev-mode
 command: ampd dev
-category: local-testing
+category: how-to-guide
 ---
 
 ## Goal
