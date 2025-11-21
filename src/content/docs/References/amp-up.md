@@ -1,6 +1,6 @@
 ---
 title: Ampup
-description: Overview of Amp Up Core Concepts
+description: Overview of Ampup Core Concepts
 slug: /references/ampup/concepts
 category: reference
 ---
