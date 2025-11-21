@@ -1,5 +1,5 @@
 ---
-title: Amp Up
+title: Ampup
 description: Overview of Amp Up Core Concepts
 slug: /references/ampup/concepts
 category: reference
