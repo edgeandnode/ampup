@@ -10,6 +10,7 @@ export async function GET() {
 
   const output = new Response(response.body, response);
   output.headers.set("Cache-Control", `public, max-age=60, s-maxage=60`);
+  output.headers.delete("Content-Encoding");
 
   return output;
 }
