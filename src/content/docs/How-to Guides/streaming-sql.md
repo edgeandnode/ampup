@@ -1,5 +1,5 @@
 ---
-title: Streaming SQL in Amp
+title: Streaming SQL
 slug: how-to/streamsql
 category: how-to-guide
 ---
