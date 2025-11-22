@@ -22,8 +22,8 @@ Amp provides a secure, compliant platform where teams can extract, transform, an
 
 ## Why Amp?
 
-- Traditional database systems aren’t designed to scale and are slow, and inflexible.
-- Many databases have been around for 30 years and were designed to be general-purpose and not for blockchain transactions.
+
+- Traditional database systems are inflexible and scale poorly for blockchain use cases
 - No native support for AI or blockchain interoperability. Many systems are cobbled together off-the-shelf solutions.
 
 > To get started, check out [Quickstart: Query Smart Contract with SQL](quickstart/querysmartcontracts)
