@@ -1,6 +1,16 @@
-# ampup
+<div align="center">
 
-The official version manager and installer for [Amp](https://github.com/edgeandnode/amp), a tool for building and managing blockchain datasets.
+<img src="https://ampup.sh/logo.svg" alt="Ampup" width="80" />
+
+# Ampup
+
+**The official version manager and installer for [Amp](https://github.com/edgeandnode/amp)**
+
+<pre>curl --proto '=https' --tlsv1.2 -sSf https://ampup.sh/install | sh</pre>
+
+[Explore the docs](https://ampup.sh/docs) · [Report Bug](https://github.com/edgeandnode/amp/issues/new?labels=bug) · [Request Feature](https://github.com/edgeandnode/amp/issues/new?labels=enhancement)
+
+</div>
 
 ## Installation
 
