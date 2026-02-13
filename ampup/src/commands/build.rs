@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 use crate::{
-    DEFAULT_REPO_PRIVATE,
+    DEFAULT_REPO,
     builder::{BuildOptions, BuildSource, Builder},
     config::Config,
     ui,
@@ -30,19 +30,19 @@ pub async fn run(
         (None, Some(repo), None, None, Some(number)) => BuildSource::Pr { repo, number },
         (None, Some(repo), None, None, None) => BuildSource::Main { repo },
         (None, None, Some(branch), None, None) => BuildSource::Branch {
-            repo: DEFAULT_REPO_PRIVATE.to_string(),
+            repo: DEFAULT_REPO.to_string(),
             branch,
         },
         (None, None, None, Some(commit), None) => BuildSource::Commit {
-            repo: DEFAULT_REPO_PRIVATE.to_string(),
+            repo: DEFAULT_REPO.to_string(),
             commit,
         },
         (None, None, None, None, Some(number)) => BuildSource::Pr {
-            repo: DEFAULT_REPO_PRIVATE.to_string(),
+            repo: DEFAULT_REPO.to_string(),
             number,
         },
         (None, None, None, None, None) => BuildSource::Main {
-            repo: DEFAULT_REPO_PRIVATE.to_string(),
+            repo: DEFAULT_REPO.to_string(),
         },
         _ => unreachable!("Clap should prevent conflicting options"),
     };
