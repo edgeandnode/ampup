@@ -19,6 +19,7 @@ pub async fn run(
     jobs: Option<usize>,
 ) -> Result<()> {
     let config = Config::new(install_dir)?;
+    // Will be passed to DownloadManager for bounded-concurrent downloads
     let _max_concurrent = jobs.unwrap_or(4);
 
     // Resolve token with fallback chain: explicit → gh auth token → unauthenticated

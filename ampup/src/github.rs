@@ -265,7 +265,7 @@ impl GitHubClient {
         let response = build_request()
             .send()
             .await
-            .context(context_msg.to_string())?;
+            .with_context(|| context_msg.to_string())?;
 
         if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
             crate::ui::warn!(
@@ -277,7 +277,7 @@ impl GitHubClient {
             let response = build_request()
                 .send()
                 .await
-                .context(context_msg.to_string())?;
+                .with_context(|| context_msg.to_string())?;
 
             if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
                 return Err(GitHubError::RateLimited {
