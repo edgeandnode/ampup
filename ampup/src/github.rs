@@ -254,13 +254,25 @@ impl GitHubClient {
         self.get_release(&format!("tags/{}", version)).await
     }
 
+    /// Wait for any active rate-limit pause, or fail if the wait is too long.
+    async fn check_rate_limit_pause(&self) -> Result<()> {
+        if let Err(duration) = self.rate_limiter.wait_if_paused().await {
+            return Err(GitHubError::RateLimited {
+                retry_after_secs: duration.as_secs(),
+                has_token: self.token.is_some(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
     /// Send a request with rate-limit awareness and one retry on 429.
     async fn send_with_rate_limit(
         &self,
         build_request: impl Fn() -> reqwest::RequestBuilder,
         context_msg: &str,
     ) -> Result<reqwest::Response> {
-        self.rate_limiter.wait_if_paused().await;
+        self.check_rate_limit_pause().await?;
 
         let response = build_request()
             .send()
@@ -272,7 +284,7 @@ impl GitHubClient {
                 "Rate limited by GitHub API, retrying in {} seconds...",
                 retry_after
             );
-            self.rate_limiter.wait_if_paused().await;
+            self.check_rate_limit_pause().await?;
 
             let response = build_request()
                 .send()

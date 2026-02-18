@@ -34,7 +34,12 @@ impl GitHubRateLimiter {
     }
 
     /// Block until any active rate-limit pause has expired.
-    pub async fn wait_if_paused(&self) {
+    ///
+    /// Returns `Err(remaining_duration)` if the pause exceeds 60 seconds,
+    /// so the caller can fail immediately with an actionable error instead of
+    /// silently blocking for a long time (e.g., unauthenticated rate-limit
+    /// resets can be up to ~60 minutes).
+    pub async fn wait_if_paused(&self) -> Result<(), Duration> {
         let wait_duration = {
             let state = self.inner.lock().await;
             state.paused_until.and_then(|until| {
@@ -44,8 +49,13 @@ impl GitHubRateLimiter {
         };
 
         if let Some(duration) = wait_duration {
+            if duration > Duration::from_secs(60) {
+                return Err(duration);
+            }
             tokio::time::sleep(duration).await;
         }
+
+        Ok(())
     }
 
     /// Inspect a response and update rate-limit state.
@@ -178,9 +188,10 @@ mod tests {
 
             //* When
             let start = Instant::now();
-            limiter.wait_if_paused().await;
+            let result = limiter.wait_if_paused().await;
 
             //* Then
+            assert!(result.is_ok(), "should succeed when no pause is set");
             assert!(
                 start.elapsed() < Duration::from_millis(50),
                 "should return immediately when no pause is set"
@@ -198,9 +209,10 @@ mod tests {
 
             //* When
             let start = Instant::now();
-            limiter.wait_if_paused().await;
+            let result = limiter.wait_if_paused().await;
 
             //* Then
+            assert!(result.is_ok(), "should succeed when pause has expired");
             assert!(
                 start.elapsed() < Duration::from_millis(50),
                 "should return immediately when pause has already expired"
@@ -218,12 +230,40 @@ mod tests {
 
             //* When
             let start = Instant::now();
-            limiter.wait_if_paused().await;
+            let result = limiter.wait_if_paused().await;
 
             //* Then
+            assert!(result.is_ok(), "should succeed for short pauses");
             assert!(
                 start.elapsed() >= Duration::from_millis(90),
                 "should block for approximately the pause duration"
+            );
+        }
+
+        #[tokio::test]
+        async fn with_pause_exceeding_max_fails_immediately() {
+            //* Given
+            let limiter = GitHubRateLimiter::new(false);
+            {
+                let mut state = limiter.inner.lock().await;
+                state.paused_until =
+                    Some(Instant::now() + Duration::from_secs(60 + 1));
+            }
+
+            //* When
+            let start = Instant::now();
+            let result = limiter.wait_if_paused().await;
+
+            //* Then
+            assert!(result.is_err(), "should fail when pause exceeds 60");
+            assert!(
+                start.elapsed() < Duration::from_millis(50),
+                "should fail immediately without sleeping"
+            );
+            let duration = result.unwrap_err();
+            assert!(
+                duration > Duration::from_secs(60),
+                "should return the remaining pause duration"
             );
         }
     }
