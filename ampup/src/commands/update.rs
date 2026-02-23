@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use semver::Version;
 
-use crate::{github::GitHubClient, ui, updater::Updater};
+use crate::{github::GitHubClient, token, ui, updater::Updater};
 
 pub async fn run(repo: String, github_token: Option<String>) -> Result<()> {
     ui::info!("Checking for updates");
 
-    let github = GitHubClient::new(repo, github_token)?;
+    let resolved_token = token::resolve_github_token(github_token);
+    let github = GitHubClient::new(repo, resolved_token)?;
     let updater = Updater::new(github);
 
     let current_version = updater.get_current_version();

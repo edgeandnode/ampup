@@ -50,6 +50,12 @@ ampup install v0.1.0
 
 # Install with custom directory
 ampup install --install-dir ~/.custom/amp v0.2.0
+
+# Install with parallel downloads (default: 4 concurrent)
+ampup install -j 8
+
+# Install sequentially (useful for debugging)
+ampup install -j 1
 ```
 
 ### List Installed Versions
@@ -113,6 +119,9 @@ Clones the repository (or uses local path), runs `cargo build --release`, and in
 # Update ampd/ampctl to latest release
 ampup update
 
+# Update with parallel downloads
+ampup update -j 8
+
 # Equivalent to:
 ampup install
 ```
@@ -162,12 +171,16 @@ The self-update performs atomic in-place replacement of the running executable.
 
 ### Installation Flow
 
-1. User runs `ampup install [version]`
-2. Detect platform (Linux/Darwin) and architecture (x86_64/aarch64)
-3. Query GitHub API for release (latest or specific tag)
-4. Download artifact: `ampd-{platform}-{arch}`
-5. Extract to `~/.amp/versions/<version>/`
-6. Activate version (create symlinks)
+1. User runs `ampup install [version] [-j N]`
+2. Resolve GitHub token (explicit `--github-token` → `gh auth token` → unauthenticated)
+3. Detect platform (Linux/Darwin) and architecture (x86_64/aarch64)
+4. Query GitHub API for release (latest or specific tag)
+5. Download artifacts concurrently (bounded by `-j`, default 4): `ampd-{platform}-{arch}`, `ampctl-{platform}-{arch}`
+   - Downloads write to a staging directory (sibling of version dir for atomic rename)
+   - Each download is verified (non-empty) and retried once on failure
+   - If any download fails, in-flight downloads are cancelled and the staging directory is cleaned up
+6. Atomically move staging directory to `~/.amp/versions/<version>/`
+7. Activate version (create symlinks) — only after all downloads succeed
 
 ### Build Flow
 
@@ -227,3 +240,15 @@ All commands accept `--install-dir` to override the default installation directo
 ampup --install-dir /opt/amp install v0.1.0
 ampup --install-dir /opt/amp list
 ```
+
+The `install` and `update` commands accept `--jobs` / `-j` to control download concurrency:
+
+```bash
+# Use 8 concurrent downloads
+ampup install -j 8
+
+# Sequential mode (useful for debugging)
+ampup install -j 1
+```
+
+Default concurrency is 4. Setting `-j 1` disables parallelism.

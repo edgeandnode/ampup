@@ -171,6 +171,22 @@ impl std::fmt::Display for GitHubError {
 
 impl std::error::Error for GitHubError {}
 
+/// A release asset resolved from GitHub metadata, ready to download.
+///
+/// Produced by [`GitHubClient::resolve_release_assets`] and consumed by
+/// [`GitHubClient::download_resolved_asset`]. This allows fetching release
+/// metadata once and then downloading multiple assets without redundant API
+/// calls.
+#[derive(Clone, Debug)]
+pub struct ResolvedAsset {
+    /// Asset ID on GitHub (used for API-based downloads of private repos).
+    pub id: u64,
+    /// Asset name (e.g. "ampd-linux-x86_64").
+    pub name: String,
+    /// Direct browser download URL (used for public repos).
+    pub url: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct Release {
     #[serde(rename = "tag_name")]
@@ -186,8 +202,9 @@ struct Asset {
     url: String,
 }
 
-/// Clone is cheap: `reqwest::Client` and `rate_limiter` are both `Arc`-backed.
-/// Needed so `DownloadManager` can move a handle into each spawned download task.
+/// Cloneable so `DownloadManager` can move a handle into each spawned task.
+/// `reqwest::Client` and `rate_limiter` are `Arc`-backed; `repo` and `token`
+/// are small strings cloned by value.
 #[derive(Clone)]
 pub struct GitHubClient {
     client: reqwest::Client,
@@ -238,6 +255,26 @@ impl GitHubClient {
         })
     }
 
+    /// Create a client with a custom API base URL for testing.
+    ///
+    /// `api_base` replaces the standard GitHub API URL so requests go to a
+    /// local mock server instead.
+    #[cfg(test)]
+    pub(crate) fn with_api_base(api_base: String) -> Result<Self> {
+        let client = reqwest::Client::builder()
+            .build()
+            .context("Failed to create request client")?;
+        let rate_limiter = Arc::new(GitHubRateLimiter::new(false));
+
+        Ok(Self {
+            client,
+            repo: "test/repo".to_string(),
+            token: None,
+            api: api_base,
+            rate_limiter,
+        })
+    }
+
     /// Get the latest release version
     pub async fn get_latest_version(&self) -> Result<String> {
         let release = self.get_latest_release().await?;
@@ -266,7 +303,81 @@ impl GitHubClient {
         Ok(())
     }
 
-    /// Send a request with rate-limit awareness and one retry on 429.
+    /// Find an asset by name within a release, returning `AssetNotFound` if
+    /// no match exists.
+    fn find_asset<'a>(
+        &self,
+        release: &'a Release,
+        asset_name: &str,
+        version: &str,
+    ) -> Result<&'a Asset> {
+        release
+            .assets
+            .iter()
+            .find(|a| a.name == asset_name)
+            .ok_or_else(|| {
+                GitHubError::AssetNotFound {
+                    repo: self.repo.clone(),
+                    asset_name: asset_name.to_string(),
+                    version: version.to_string(),
+                    available_assets: release.assets.iter().map(|a| a.name.clone()).collect(),
+                }
+                .into()
+            })
+    }
+
+    /// Resolve multiple asset names from a single release, fetching the release
+    /// metadata only once.
+    ///
+    /// Returns a `ResolvedAsset` for each requested name. Fails with
+    /// `GitHubError::AssetNotFound` on the first name that does not match any
+    /// asset in the release.
+    pub async fn resolve_release_assets(
+        &self,
+        version: &str,
+        asset_names: &[&str],
+    ) -> Result<Vec<ResolvedAsset>> {
+        let release = self.get_tagged_release(version).await?;
+
+        let mut resolved = Vec::with_capacity(asset_names.len());
+        for &name in asset_names {
+            let asset = self.find_asset(&release, name, version)?;
+            resolved.push(ResolvedAsset {
+                id: asset.id,
+                name: asset.name.clone(),
+                url: asset.url.clone(),
+            });
+        }
+        Ok(resolved)
+    }
+
+    /// Download a previously resolved asset without re-fetching release
+    /// metadata.
+    pub async fn download_resolved_asset(
+        &self,
+        asset: &ResolvedAsset,
+        show_progress: bool,
+    ) -> Result<Vec<u8>> {
+        if self.token.is_some() {
+            self.download_asset_via_api(asset.id, &asset.name, show_progress)
+                .await
+        } else {
+            self.download_asset_direct(&asset.url, &asset.name, show_progress)
+                .await
+        }
+    }
+
+    /// Send a request with rate-limit awareness, one retry on 429, and one
+    /// retry on transient server/transport errors.
+    ///
+    /// Retry order:
+    /// 1. Rate-limit (429/403-rate-limited) — wait for `Retry-After`, retry once
+    /// 2. Server error (5xx) — 1-second delay, retry once
+    /// 3. Transport error (connection reset, DNS, timeout) — 1-second delay, retry once
+    ///
+    /// These retries protect metadata fetches (`get_release`,
+    /// `resolve_release_assets`) which have no outer retry layer. Download
+    /// paths have an additional retry in `DownloadManager::download_with_retry`.
     async fn send_with_rate_limit(
         &self,
         build_request: impl Fn() -> reqwest::RequestBuilder,
@@ -274,16 +385,56 @@ impl GitHubClient {
     ) -> Result<reqwest::Response> {
         self.check_rate_limit_pause().await?;
 
-        let response = build_request()
-            .send()
-            .await
-            .with_context(|| context_msg.to_string())?;
+        let response = match build_request().send().await {
+            Ok(resp) => resp,
+            Err(first_err) => {
+                // One retry on transport errors (connection reset, DNS, timeout)
+                crate::ui::warn!("Request failed ({}), retrying once...", first_err);
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                self.check_rate_limit_pause().await?;
 
-        if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
+                build_request().send().await.with_context(|| {
+                    format!(
+                        "{} (retry also failed, first error: {})",
+                        context_msg, first_err
+                    )
+                })?
+            }
+        };
+
+        let response =
+            if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
+                crate::ui::warn!(
+                    "Rate limited by GitHub API, retrying in {} seconds...",
+                    retry_after
+                );
+                self.check_rate_limit_pause().await?;
+
+                let response = build_request()
+                    .send()
+                    .await
+                    .with_context(|| context_msg.to_string())?;
+
+                if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
+                    return Err(GitHubError::RateLimited {
+                        retry_after_secs: retry_after,
+                        has_token: self.token.is_some(),
+                    }
+                    .into());
+                }
+
+                response
+            } else {
+                response
+            };
+
+        // One retry on server errors (5xx) — transient GitHub/CDN blips
+        if response.status().is_server_error() {
             crate::ui::warn!(
-                "Rate limited by GitHub API, retrying in {} seconds...",
-                retry_after
+                "Server error (HTTP {}), retrying once...",
+                response.status().as_u16()
             );
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             self.check_rate_limit_pause().await?;
 
             let response = build_request()
@@ -291,14 +442,7 @@ impl GitHubClient {
                 .await
                 .with_context(|| context_msg.to_string())?;
 
-            if let Some(retry_after) = self.rate_limiter.update_from_response(&response).await {
-                return Err(GitHubError::RateLimited {
-                    retry_after_secs: retry_after,
-                    has_token: self.token.is_some(),
-                }
-                .into());
-            }
-
+            self.rate_limiter.update_from_response(&response).await;
             return Ok(response);
         }
 
@@ -361,33 +505,38 @@ impl GitHubClient {
         Ok(release)
     }
 
-    /// Download a release asset by name
-    pub async fn download_release_asset(&self, version: &str, asset_name: &str) -> Result<Vec<u8>> {
+    /// Download a release asset by name.
+    ///
+    /// When `show_progress` is `true`, an indicatif progress bar is rendered for
+    /// this individual download. Set to `false` when downloads are managed by
+    /// `DownloadManager` (which will provide aggregate progress in the future).
+    pub async fn download_release_asset(
+        &self,
+        version: &str,
+        asset_name: &str,
+        show_progress: bool,
+    ) -> Result<Vec<u8>> {
         let release = self.get_tagged_release(version).await?;
-
-        // Find the asset
-        let asset = release
-            .assets
-            .iter()
-            .find(|a| a.name == asset_name)
-            .ok_or_else(|| GitHubError::AssetNotFound {
-                repo: self.repo.clone(),
-                asset_name: asset_name.to_string(),
-                version: version.to_string(),
-                available_assets: release.assets.iter().map(|a| a.name.clone()).collect(),
-            })?;
+        let asset = self.find_asset(&release, asset_name, version)?;
 
         if self.token.is_some() {
             // For private repositories, we need to use the API to download
-            self.download_asset_via_api(asset.id, asset_name).await
+            self.download_asset_via_api(asset.id, asset_name, show_progress)
+                .await
         } else {
             // For public repositories, use direct download URL
-            self.download_asset_direct(&asset.url, asset_name).await
+            self.download_asset_direct(&asset.url, asset_name, show_progress)
+                .await
         }
     }
 
     /// Download asset via GitHub API (for private repos)
-    async fn download_asset_via_api(&self, asset_id: u64, asset_name: &str) -> Result<Vec<u8>> {
+    async fn download_asset_via_api(
+        &self,
+        asset_id: u64,
+        asset_name: &str,
+        show_progress: bool,
+    ) -> Result<Vec<u8>> {
         let url = format!(
             "https://api.github.com/repos/{}/releases/assets/{}",
             self.repo, asset_id
@@ -404,25 +553,35 @@ impl GitHubClient {
             )
             .await?;
 
-        self.download_with_progress(response, &url, asset_name)
+        self.download_with_progress(response, &url, asset_name, show_progress)
             .await
     }
 
     /// Download asset directly (for public repos)
-    async fn download_asset_direct(&self, url: &str, asset_name: &str) -> Result<Vec<u8>> {
+    async fn download_asset_direct(
+        &self,
+        url: &str,
+        asset_name: &str,
+        show_progress: bool,
+    ) -> Result<Vec<u8>> {
         let response = self
             .send_with_rate_limit(|| self.client.get(url), "Failed to download asset")
             .await?;
 
-        self.download_with_progress(response, url, asset_name).await
+        self.download_with_progress(response, url, asset_name, show_progress)
+            .await
     }
 
-    /// Download with progress bar from a response
+    /// Download with optional progress bar from a response.
+    ///
+    /// When `show_progress` is `false`, bytes are collected silently (used by
+    /// `DownloadManager` which manages its own aggregate progress reporting).
     async fn download_with_progress(
         &self,
         response: reqwest::Response,
         url: &str,
         asset_name: &str,
+        show_progress: bool,
     ) -> Result<Vec<u8>> {
         if !response.status().is_success() {
             let status = response.status();
@@ -435,29 +594,31 @@ impl GitHubClient {
             .into());
         }
 
-        // Get content length for progress bar
-        let total_size = response.content_length();
-
-        // Setup progress bar
-        let pb = if let Some(size) = total_size {
-            let pb = ProgressBar::new(size);
-            pb.set_style(
-                ProgressStyle::default_bar()
-                    .template(
-                        "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
-                    )
-                    .context("Invalid progress bar template")?
-                    .progress_chars("#>-"),
-            );
-            pb.set_message(format!("{} Downloading", console::style("→").cyan()));
-            pb
+        // Setup progress bar (hidden when DownloadManager handles progress)
+        let pb = if show_progress {
+            let total_size = response.content_length();
+            if let Some(size) = total_size {
+                let pb = ProgressBar::new(size);
+                pb.set_style(
+                    ProgressStyle::default_bar()
+                        .template(
+                            "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
+                        )
+                        .context("Invalid progress bar template")?
+                        .progress_chars("#>-"),
+                );
+                pb.set_message(format!("{} Downloading", console::style("→").cyan()));
+                pb
+            } else {
+                let pb = ProgressBar::new_spinner();
+                pb.set_message(format!(
+                    "{} Downloading (size unknown)",
+                    console::style("→").cyan()
+                ));
+                pb
+            }
         } else {
-            let pb = ProgressBar::new_spinner();
-            pb.set_message(format!(
-                "{} Downloading (size unknown)",
-                console::style("→").cyan()
-            ));
-            pb
+            ProgressBar::hidden()
         };
 
         // Stream and collect chunks
@@ -472,7 +633,9 @@ impl GitHubClient {
             pb.set_position(downloaded);
         }
 
-        pb.finish_with_message(format!("{} Downloaded", console::style("✓").green().bold()));
+        if show_progress {
+            pb.finish_with_message(format!("{} Downloaded", console::style("✓").green().bold()));
+        }
 
         Ok(buffer)
     }

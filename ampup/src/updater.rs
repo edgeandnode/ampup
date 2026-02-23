@@ -40,7 +40,7 @@ impl Updater {
 
         let binary_data = self
             .github
-            .download_release_asset(version, &artifact_name)
+            .download_release_asset(version, &artifact_name, true)
             .await
             .context("Failed to download ampup binary")?;
 

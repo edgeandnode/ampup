@@ -9,8 +9,12 @@ use std::process::Command;
 /// Note: `--github-token` values may be visible in process listings (`ps aux`).
 /// Prefer `GITHUB_TOKEN` env var or `gh auth token` for sensitive environments.
 pub fn resolve_github_token(explicit: Option<String>) -> Option<String> {
-    if explicit.is_some() {
-        return explicit;
+    // Filter out empty/whitespace-only tokens so they fall through to the
+    // gh CLI fallback instead of sending a useless `Bearer ` header.
+    if let Some(token) = explicit
+        && !token.trim().is_empty()
+    {
+        return Some(token);
     }
 
     try_gh_auth_token()
@@ -63,13 +67,34 @@ mod tests {
     }
 
     #[test]
-    fn resolve_github_token_with_none_exercises_fallback_without_panicking() {
-        //* Given — no explicit token provided
+    fn resolve_github_token_with_empty_string_falls_through_to_fallback() {
+        //* Given
+        let explicit = Some("".to_string());
 
-        //* When — the result depends on whether `gh` is installed and
-        //* authenticated, so we only assert it doesn't panic.
-        let _result = resolve_github_token(None);
+        //* When — empty token should be treated as absent, not as a valid credential
+        let result = resolve_github_token(explicit);
 
-        //* Then — reaching this point means the fallback chain completed
+        //* Then — result depends on gh CLI availability, but must NOT be Some("")
+        assert_ne!(
+            result,
+            Some("".to_string()),
+            "should not return an empty string as a valid token"
+        );
+    }
+
+    #[test]
+    fn resolve_github_token_with_whitespace_only_falls_through_to_fallback() {
+        //* Given
+        let explicit = Some("   ".to_string());
+
+        //* When
+        let result = resolve_github_token(explicit);
+
+        //* Then
+        assert_ne!(
+            result,
+            Some("   ".to_string()),
+            "should not return a whitespace-only string as a valid token"
+        );
     }
 }
