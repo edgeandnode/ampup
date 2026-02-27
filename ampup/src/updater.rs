@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use fs_err as fs;
+use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::{
     github::GitHubClient,
@@ -38,11 +39,24 @@ impl Updater {
         let artifact_name = format!("ampup-{}-{}", platform.as_str(), arch.as_str());
         ui::info!("Downloading {}", artifact_name);
 
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template(
+                    "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
+                )
+                .expect("valid progress bar template")
+                .progress_chars("#>-"),
+        );
+        pb.set_message(format!("{} Downloading", console::style("→").cyan()));
+
         let binary_data = self
             .github
-            .download_release_asset(version, &artifact_name, true)
+            .download_release_asset(version, &artifact_name, pb.clone())
             .await
             .context("Failed to download ampup binary")?;
+
+        pb.finish_with_message(format!("{} Downloaded", console::style("✓").green().bold()));
 
         // Get the current executable path
         let current_exe =

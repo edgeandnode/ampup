@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use fs_err as fs;
+use indicatif::ProgressBar;
 use tokio::{sync::Semaphore, task::JoinSet};
 
 use crate::{
@@ -331,15 +332,19 @@ async fn download_with_retry(
     github: &GitHubClient,
     asset: &ResolvedAsset,
 ) -> std::result::Result<Vec<u8>, DownloadError> {
-    // `false` suppresses per-file progress bars — DownloadManager provides
-    // aggregate progress reporting via ProgressReporter.
-    match github.download_resolved_asset(asset, false).await {
+    // `ProgressBar::hidden()` suppresses per-file progress bars —
+    // DownloadManager provides aggregate progress reporting via
+    // ProgressReporter.
+    match github
+        .download_resolved_asset(asset, ProgressBar::hidden())
+        .await
+    {
         Ok(data) => Ok(data),
         Err(first_err) => {
             crate::ui::warn!("Download failed for {}, retrying once...", asset.name);
 
             github
-                .download_resolved_asset(asset, false)
+                .download_resolved_asset(asset, ProgressBar::hidden())
                 .await
                 .map_err(|retry_err| DownloadError::TaskFailed {
                     artifact_name: asset.name.clone(),
