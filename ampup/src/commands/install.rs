@@ -17,10 +17,9 @@ pub async fn run(
     version: Option<String>,
     arch_override: Option<String>,
     platform_override: Option<String>,
-    jobs: Option<usize>,
+    jobs: usize,
 ) -> Result<()> {
     let config = Config::new(install_dir)?;
-    let max_concurrent = jobs.unwrap_or(4);
 
     // Resolve token with fallback chain: explicit → gh auth token → unauthenticated
     let resolved_token = token::resolve_github_token(github_token);
@@ -89,7 +88,7 @@ pub async fn run(
     ui::detail!("Platform: {}, Architecture: {}", platform, arch);
 
     // Install the binary
-    let download_manager = DownloadManager::new(github, max_concurrent);
+    let download_manager = DownloadManager::new(github, jobs);
     let installer = Installer::new(version_manager, download_manager);
     installer
         .install_from_release(&version, platform, arch)

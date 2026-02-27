@@ -17,5 +17,8 @@ pub mod ui;
 /// Default GitHub repository for amp releases
 pub const DEFAULT_REPO: &str = "edgeandnode/amp";
 
+/// Default number of concurrent downloads
+pub const DEFAULT_DOWNLOAD_JOBS: usize = 4;
+
 #[cfg(test)]
 mod tests;
