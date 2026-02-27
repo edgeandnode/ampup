@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::{
     download_manager::{DownloadManager, DownloadTask},
     platform::{Architecture, Platform},
-    ui,
+    progress, ui,
     version_manager::VersionManager,
 };
 
@@ -50,10 +50,11 @@ impl Installer {
             },
         ];
 
+        let reporter = progress::create_reporter();
         let version_dir = self.version_manager.config().versions_dir.join(version);
 
         self.download_manager
-            .download_all(tasks, version, version_dir)
+            .download_all(tasks, version, version_dir, reporter)
             .await?;
 
         // Activation barrier: all downloads succeeded, now create symlinks
