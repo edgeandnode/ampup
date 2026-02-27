@@ -1,4 +1,4 @@
-use ampup::{DEFAULT_REPO, commands};
+use ampup::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO, commands};
 use console::style;
 
 /// The ampd installer and version manager
@@ -58,9 +58,9 @@ enum Commands {
         #[arg(long)]
         platform: Option<String>,
 
-        /// Number of concurrent downloads (default: 4)
-        #[arg(short = 'j', long = "jobs")]
-        jobs: Option<usize>,
+        /// Number of concurrent downloads
+        #[arg(short = 'j', long = "jobs", default_value_t = DEFAULT_DOWNLOAD_JOBS)]
+        jobs: usize,
     },
 
     /// List installed versions
@@ -147,9 +147,9 @@ enum Commands {
         #[arg(long)]
         platform: Option<String>,
 
-        /// Number of concurrent downloads (default: 4)
-        #[arg(short = 'j', long = "jobs")]
-        jobs: Option<usize>,
+        /// Number of concurrent downloads
+        #[arg(short = 'j', long = "jobs", default_value_t = DEFAULT_DOWNLOAD_JOBS)]
+        jobs: usize,
     },
 
     /// Manage the ampup executable
@@ -275,7 +275,7 @@ async fn run() -> anyhow::Result<()> {
                 None,
                 None,
                 None,
-                None,
+                DEFAULT_DOWNLOAD_JOBS,
             )
             .await?;
         }

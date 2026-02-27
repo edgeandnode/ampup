@@ -98,7 +98,7 @@ pub async fn run(
             None,
             None,
             None,
-            None,
+            crate::DEFAULT_DOWNLOAD_JOBS,
         )
         .await?;
     } else {

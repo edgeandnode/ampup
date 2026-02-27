@@ -152,30 +152,7 @@ mod tests {
     //! following the project convention for modules with 10+ tests (see
     //! docs/code/test-files.md "Module Structure Within cfg(test)").
 
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     use super::*;
-
-    /// Spawn a one-shot TCP server that returns a raw HTTP response.
-    /// Accepts one connection, drains the request, writes `response_bytes`, then closes.
-    async fn mock_http_response(response_bytes: Vec<u8>) -> std::net::SocketAddr {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("should bind to a random port");
-        let addr = listener.local_addr().expect("should have a local address");
-
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.expect("should accept a connection");
-            let mut buf = [0u8; 1024];
-            let _ = stream.read(&mut buf).await;
-            stream
-                .write_all(&response_bytes)
-                .await
-                .expect("should write response");
-        });
-
-        addr
-    }
 
     /// Tests for the blocking gate that callers use before making HTTP requests.
     mod wait_if_paused {
@@ -246,8 +223,7 @@ mod tests {
             let limiter = GitHubRateLimiter::new(false);
             {
                 let mut state = limiter.inner.lock().await;
-                state.paused_until =
-                    Some(Instant::now() + Duration::from_secs(60 + 1));
+                state.paused_until = Some(Instant::now() + Duration::from_secs(60 + 1));
             }
 
             //* When
@@ -351,8 +327,31 @@ mod tests {
     /// End-to-end tests that send real HTTP through reqwest to verify that the
     /// header names (`X-RateLimit-Remaining`, `X-RateLimit-Reset`, `Retry-After`)
     /// are parsed correctly from actual HTTP responses.
-    mod update_from_response {
+    mod it_update_from_response {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
         use super::*;
+
+        /// Spawn a one-shot TCP server that returns a raw HTTP response.
+        /// Accepts one connection, drains the request, writes `response_bytes`, then closes.
+        async fn mock_http_response(response_bytes: Vec<u8>) -> std::net::SocketAddr {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("should bind to a random port");
+            let addr = listener.local_addr().expect("should have a local address");
+
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("should accept a connection");
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf).await;
+                stream
+                    .write_all(&response_bytes)
+                    .await
+                    .expect("should write response");
+            });
+
+            addr
+        }
 
         #[tokio::test]
         async fn with_ok_status_parses_remaining_header() {

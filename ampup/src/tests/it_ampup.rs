@@ -5,7 +5,7 @@ use fs_err as fs;
 use tempfile::TempDir;
 
 use super::fixtures::{MockBinary, TempInstallDir};
-use crate::DEFAULT_REPO;
+use crate::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO};
 
 #[tokio::test]
 async fn init_creates_directory_structure() -> Result<()> {
@@ -180,7 +180,7 @@ async fn install_latest_version() -> Result<()> {
         None,
         None,
         None,
-        None,
+        DEFAULT_DOWNLOAD_JOBS,
     )
     .await?;
 
@@ -209,7 +209,7 @@ async fn install_specific_version() -> Result<()> {
         Some(version.to_string()),
         None,
         None,
-        None,
+        DEFAULT_DOWNLOAD_JOBS,
     )
     .await?;
 
@@ -236,7 +236,7 @@ async fn install_already_installed_version_switches_to_it() -> Result<()> {
         Some(version.to_string()),
         None,
         None,
-        None,
+        DEFAULT_DOWNLOAD_JOBS,
     )
     .await?;
 
@@ -248,7 +248,7 @@ async fn install_already_installed_version_switches_to_it() -> Result<()> {
         Some(version.to_string()),
         None,
         None,
-        None,
+        DEFAULT_DOWNLOAD_JOBS,
     )
     .await?;
 
