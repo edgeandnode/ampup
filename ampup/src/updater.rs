@@ -45,7 +45,7 @@ impl Updater {
                 .template(
                     "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
                 )
-                .expect("valid progress bar template")
+                .context("Invalid progress bar template")?
                 .progress_chars("#>-"),
         );
         pb.set_message(format!("{} Downloading", console::style("→").cyan()));

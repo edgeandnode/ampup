@@ -111,7 +111,7 @@ impl TtyProgress {
     /// Terminal write failures are best-effort — progress display failure
     /// should not abort downloads.
     fn redraw(&self, state: &ProgressState) {
-        let mut lines_drawn = self.lines_drawn.lock().expect("lines_drawn lock poisoned");
+        let mut lines_drawn = self.lines_drawn.lock().unwrap_or_else(|e| e.into_inner());
 
         // Move cursor back to overwrite previous output
         if *lines_drawn > 0 {
@@ -137,7 +137,7 @@ impl TtyProgress {
 
 impl ProgressReporter for TtyProgress {
     fn set_total(&self, _total: usize, names: Vec<String>) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let count = names.len();
         state.statuses = vec![ComponentStatus::Pending; count];
         state.names = names;
@@ -145,7 +145,7 @@ impl ProgressReporter for TtyProgress {
     }
 
     fn component_started(&self, name: &str) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(idx) = state.index_of(name) {
             state.statuses[idx] = ComponentStatus::Downloading;
         }
@@ -153,7 +153,7 @@ impl ProgressReporter for TtyProgress {
     }
 
     fn component_completed(&self, name: &str) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(idx) = state.index_of(name) {
             state.statuses[idx] = ComponentStatus::Completed;
             state.completed_count += 1;
@@ -162,7 +162,7 @@ impl ProgressReporter for TtyProgress {
     }
 
     fn component_failed(&self, name: &str) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(idx) = state.index_of(name) {
             state.statuses[idx] = ComponentStatus::Failed;
         }
@@ -171,7 +171,7 @@ impl ProgressReporter for TtyProgress {
 
     fn finish(&self) {
         // Final redraw to ensure terminal is in a clean state
-        let state = self.state.lock().expect("state lock poisoned");
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.redraw(&state);
     }
 }
@@ -198,7 +198,7 @@ impl CiProgress {
 
 impl ProgressReporter for CiProgress {
     fn set_total(&self, _total: usize, names: Vec<String>) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let count = names.len();
         state.statuses = vec![ComponentStatus::Pending; count];
         state.names = names;
@@ -209,36 +209,24 @@ impl ProgressReporter for CiProgress {
     }
 
     fn component_completed(&self, name: &str) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(idx) = state.index_of(name) {
             state.statuses[idx] = ComponentStatus::Completed;
             state.completed_count += 1;
         }
         let total = state.names.len();
         let completed = state.completed_count;
-        println!(
-            "  {} [{}/{}] Downloaded {}",
-            style("✓").green().bold(),
-            completed,
-            total,
-            name
-        );
+        crate::ui::success!("[{}/{}] Downloaded {}", completed, total, name);
     }
 
     fn component_failed(&self, name: &str) {
-        let mut state = self.state.lock().expect("state lock poisoned");
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(idx) = state.index_of(name) {
             state.statuses[idx] = ComponentStatus::Failed;
         }
         let total = state.names.len();
         let completed = state.completed_count;
-        eprintln!(
-            "  {} [{}/{}] Failed {}",
-            style("✗").red().bold(),
-            completed,
-            total,
-            name
-        );
+        crate::ui::warn!("[{}/{}] Failed {}", completed, total, name);
     }
 
     fn finish(&self) {
@@ -329,7 +317,10 @@ mod tests {
             reporter.set_total(2, vec!["ampd".to_string(), "ampctl".to_string()]);
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(state.names.len(), 2);
             assert!(
                 state
@@ -350,7 +341,10 @@ mod tests {
             reporter.component_started("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Downloading,
@@ -374,7 +368,10 @@ mod tests {
             reporter.component_completed("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Completed,
@@ -397,7 +394,10 @@ mod tests {
             reporter.component_failed("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Failed,
@@ -414,7 +414,10 @@ mod tests {
             //* When / Then — should not panic
             reporter.component_started("nonexistent");
 
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Pending,
@@ -446,7 +449,10 @@ mod tests {
             reporter.component_completed("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.completed_count, 1,
                 "completed count should be incremented"
@@ -468,7 +474,10 @@ mod tests {
             reporter.component_failed("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Failed,
@@ -486,7 +495,10 @@ mod tests {
             reporter.component_started("ampd");
 
             //* Then
-            let state = reporter.state.lock().expect("lock");
+            let state = reporter
+                .state
+                .lock()
+                .expect("state lock should not be poisoned in tests");
             assert_eq!(
                 state.statuses[0],
                 ComponentStatus::Pending,
