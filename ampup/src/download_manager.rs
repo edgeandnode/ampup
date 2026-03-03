@@ -7,7 +7,10 @@ use anyhow::{Context, Result};
 use fs_err as fs;
 use tokio::{sync::Semaphore, task::JoinSet};
 
-use crate::github::{GitHubClient, ResolvedAsset};
+use crate::{
+    github::{GitHubClient, ResolvedAsset},
+    progress::ProgressReporter,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -168,6 +171,7 @@ impl DownloadManager {
         tasks: Vec<DownloadTask>,
         version: &str,
         version_dir: PathBuf,
+        reporter: Arc<dyn ProgressReporter>,
     ) -> Result<()> {
         // Resolve all asset metadata with a single API call so that each
         // spawned task can download directly without re-fetching the release.
@@ -185,13 +189,17 @@ impl DownloadManager {
         let staging_dir =
             tempfile::tempdir_in(parent).context("Failed to create staging directory")?;
 
+        let names: Vec<String> = tasks.iter().map(|t| t.artifact_name.clone()).collect();
+        reporter.set_total(tasks.len(), names);
+
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
-        let mut join_set: JoinSet<std::result::Result<(), DownloadError>> = JoinSet::new();
+        let mut join_set: JoinSet<std::result::Result<String, DownloadError>> = JoinSet::new();
 
         for (task, asset) in tasks.into_iter().zip(resolved) {
             let github = self.github.clone();
             let sem = semaphore.clone();
             let staging_path = staging_dir.path().to_path_buf();
+            let reporter = reporter.clone();
 
             join_set.spawn(async move {
                 let _permit = sem
@@ -201,28 +209,38 @@ impl DownloadManager {
                         artifact_name: task.artifact_name.clone(),
                     })?;
 
+                reporter.component_started(&task.artifact_name);
+
                 let data = download_with_retry(&github, &asset).await?;
                 verify_artifact(&task.artifact_name, &data)?;
                 write_to_staging(&staging_path, &task.dest_filename, &data)?;
 
-                Ok(())
+                Ok(task.artifact_name)
             });
         }
 
         // Collect results — fail fast on first error
         while let Some(result) = join_set.join_next().await {
             match result {
-                Ok(Ok(())) => {}
+                Ok(Ok(artifact_name)) => {
+                    reporter.component_completed(&artifact_name);
+                }
                 Ok(Err(e)) => {
+                    let artifact_name = download_error_artifact_name(&e);
+                    reporter.component_failed(artifact_name);
+                    reporter.finish();
                     join_set.shutdown().await;
                     return Err(e.into());
                 }
                 Err(join_err) => {
+                    reporter.finish();
                     join_set.shutdown().await;
                     return Err(anyhow::anyhow!("download task panicked: {}", join_err));
                 }
             }
         }
+
+        reporter.finish();
 
         // Set executable permissions on all staged files
         #[cfg(unix)]
@@ -313,15 +331,13 @@ async fn download_with_retry(
     github: &GitHubClient,
     asset: &ResolvedAsset,
 ) -> std::result::Result<Vec<u8>, DownloadError> {
-    // `false` suppresses per-file progress bars — DownloadManager will
-    // provide aggregate progress reporting in a future PR.
-    match github.download_resolved_asset(asset, false).await {
+    match github.download_resolved_asset(asset).await {
         Ok(data) => Ok(data),
         Err(first_err) => {
             crate::ui::warn!("Download failed for {}, retrying once...", asset.name);
 
             github
-                .download_resolved_asset(asset, false)
+                .download_resolved_asset(asset)
                 .await
                 .map_err(|retry_err| DownloadError::TaskFailed {
                     artifact_name: asset.name.clone(),
@@ -355,6 +371,16 @@ fn write_to_staging(
         path: dest,
         source: err,
     })
+}
+
+/// Extract the artifact name from a [`DownloadError`].
+fn download_error_artifact_name(err: &DownloadError) -> &str {
+    match err {
+        DownloadError::TaskFailed { artifact_name, .. }
+        | DownloadError::EmptyArtifact { artifact_name }
+        | DownloadError::StagingWrite { artifact_name, .. }
+        | DownloadError::SemaphoreClosed { artifact_name } => artifact_name,
+    }
 }
 
 /// Set executable permissions (0o755) on all files in a directory.
@@ -548,6 +574,18 @@ mod tests {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
         use super::*;
+        use crate::progress::ProgressReporter;
+
+        /// No-op reporter for tests that don't need progress output.
+        struct NoopReporter;
+
+        impl ProgressReporter for NoopReporter {
+            fn set_total(&self, _total: usize, _names: Vec<String>) {}
+            fn component_started(&self, _name: &str) {}
+            fn component_completed(&self, _name: &str) {}
+            fn component_failed(&self, _name: &str) {}
+            fn finish(&self) {}
+        }
 
         /// Route configuration for the mock HTTP server.
         #[derive(Clone)]
@@ -729,8 +767,9 @@ mod tests {
 
             /// Run `download_all` with the given tasks.
             async fn download(&self, tasks: Vec<DownloadTask>) -> Result<()> {
+                let reporter: Arc<dyn ProgressReporter> = Arc::new(NoopReporter);
                 self.manager
-                    .download_all(tasks, "v1.0.0", self.version_dir.clone())
+                    .download_all(tasks, "v1.0.0", self.version_dir.clone(), reporter)
                     .await
             }
         }

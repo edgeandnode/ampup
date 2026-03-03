@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::Deserialize;
 
 use crate::rate_limiter::GitHubRateLimiter;
@@ -353,17 +352,11 @@ impl GitHubClient {
 
     /// Download a previously resolved asset without re-fetching release
     /// metadata.
-    pub async fn download_resolved_asset(
-        &self,
-        asset: &ResolvedAsset,
-        show_progress: bool,
-    ) -> Result<Vec<u8>> {
+    pub async fn download_resolved_asset(&self, asset: &ResolvedAsset) -> Result<Vec<u8>> {
         if self.token.is_some() {
-            self.download_asset_via_api(asset.id, &asset.name, show_progress)
-                .await
+            self.download_asset_via_api(asset.id, &asset.name).await
         } else {
-            self.download_asset_direct(&asset.url, &asset.name, show_progress)
-                .await
+            self.download_asset_direct(&asset.url, &asset.name).await
         }
     }
 
@@ -506,37 +499,21 @@ impl GitHubClient {
     }
 
     /// Download a release asset by name.
-    ///
-    /// When `show_progress` is `true`, an indicatif progress bar is rendered for
-    /// this individual download. Set to `false` when downloads are managed by
-    /// `DownloadManager` (which will provide aggregate progress in the future).
-    pub async fn download_release_asset(
-        &self,
-        version: &str,
-        asset_name: &str,
-        show_progress: bool,
-    ) -> Result<Vec<u8>> {
+    pub async fn download_release_asset(&self, version: &str, asset_name: &str) -> Result<Vec<u8>> {
         let release = self.get_tagged_release(version).await?;
         let asset = self.find_asset(&release, asset_name, version)?;
 
         if self.token.is_some() {
             // For private repositories, we need to use the API to download
-            self.download_asset_via_api(asset.id, asset_name, show_progress)
-                .await
+            self.download_asset_via_api(asset.id, asset_name).await
         } else {
             // For public repositories, use direct download URL
-            self.download_asset_direct(&asset.url, asset_name, show_progress)
-                .await
+            self.download_asset_direct(&asset.url, asset_name).await
         }
     }
 
     /// Download asset via GitHub API (for private repos)
-    async fn download_asset_via_api(
-        &self,
-        asset_id: u64,
-        asset_name: &str,
-        show_progress: bool,
-    ) -> Result<Vec<u8>> {
+    async fn download_asset_via_api(&self, asset_id: u64, asset_name: &str) -> Result<Vec<u8>> {
         let url = format!(
             "https://api.github.com/repos/{}/releases/assets/{}",
             self.repo, asset_id
@@ -553,35 +530,24 @@ impl GitHubClient {
             )
             .await?;
 
-        self.download_with_progress(response, &url, asset_name, show_progress)
-            .await
+        self.download_response(response, &url, asset_name).await
     }
 
     /// Download asset directly (for public repos)
-    async fn download_asset_direct(
-        &self,
-        url: &str,
-        asset_name: &str,
-        show_progress: bool,
-    ) -> Result<Vec<u8>> {
+    async fn download_asset_direct(&self, url: &str, asset_name: &str) -> Result<Vec<u8>> {
         let response = self
             .send_with_rate_limit(|| self.client.get(url), "Failed to download asset")
             .await?;
 
-        self.download_with_progress(response, url, asset_name, show_progress)
-            .await
+        self.download_response(response, url, asset_name).await
     }
 
-    /// Download with optional progress bar from a response.
-    ///
-    /// When `show_progress` is `false`, bytes are collected silently (used by
-    /// `DownloadManager` which manages its own aggregate progress reporting).
-    async fn download_with_progress(
+    /// Stream a response body into a buffer.
+    async fn download_response(
         &self,
         response: reqwest::Response,
         url: &str,
         asset_name: &str,
-        show_progress: bool,
     ) -> Result<Vec<u8>> {
         if !response.status().is_success() {
             let status = response.status();
@@ -594,47 +560,13 @@ impl GitHubClient {
             .into());
         }
 
-        // Setup progress bar (hidden when DownloadManager handles progress)
-        let pb = if show_progress {
-            let total_size = response.content_length();
-            if let Some(size) = total_size {
-                let pb = ProgressBar::new(size);
-                pb.set_style(
-                    ProgressStyle::default_bar()
-                        .template(
-                            "{msg} [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})",
-                        )
-                        .context("Invalid progress bar template")?
-                        .progress_chars("#>-"),
-                );
-                pb.set_message(format!("{} Downloading", console::style("→").cyan()));
-                pb
-            } else {
-                let pb = ProgressBar::new_spinner();
-                pb.set_message(format!(
-                    "{} Downloading (size unknown)",
-                    console::style("→").cyan()
-                ));
-                pb
-            }
-        } else {
-            ProgressBar::hidden()
-        };
-
         // Stream and collect chunks
-        let mut downloaded: u64 = 0;
         let mut buffer = Vec::new();
         let mut stream = response.bytes_stream();
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.context("Error while downloading file")?;
             buffer.extend_from_slice(&chunk);
-            downloaded += chunk.len() as u64;
-            pb.set_position(downloaded);
-        }
-
-        if show_progress {
-            pb.finish_with_message(format!("{} Downloaded", console::style("✓").green().bold()));
         }
 
         Ok(buffer)
