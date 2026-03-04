@@ -32,7 +32,7 @@ main() {
 download_asset() {
 	local artifact="$1"
 	local output="$2"
-	local url="https://github.com/edgeandnode/amp/releases/latest/download/${artifact}"
+	local url="https://github.com/edgeandnode/ampup/releases/latest/download/${artifact}"
 	ensure curl --proto =https --tlsv1.2 --silent --show-error --fail --location "${url}" --output "${output}"
 }
 
