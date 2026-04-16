@@ -361,7 +361,6 @@ For more detailed information about the project:
 - `rust-toolchain.toml` — Pins Rust 1.92.0
 - `rustfmt.toml` — Formatting config (nightly features)
 - `justfile` — Task runner commands
-- `install` — Platform-agnostic installer script (root level)
 
 ### Documentation
 

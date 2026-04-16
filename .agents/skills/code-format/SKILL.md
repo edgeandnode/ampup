@@ -95,11 +95,6 @@ This is a critical requirement from the project's development workflow:
 2. When ready to validate, run: `just fmt-rs`
 3. Then run checks
 
-**Shell script edit:**
-1. Edit the `install` script
-2. When ready to validate, run: `just fmt-sh`
-3. Then run checks
-
 ## Common Mistakes to Avoid
 
 ### ❌ Anti-patterns
@@ -114,7 +109,6 @@ This is a critical requirement from the project's development workflow:
 - Format before running checks/tests or before committing
 - Use `just fmt-rs-file` for 1-2 files (faster, targeted)
 - Use `just fmt-rs` for 3+ files (more efficient)
-- Use `just fmt-sh` after editing the `install` script
 - Run format check commands to verify formatting before commits
 
 ## Next Steps
