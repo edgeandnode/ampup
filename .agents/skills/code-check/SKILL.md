@@ -39,14 +39,6 @@ Examples:
 - `just clippy` - lint all code
 - `just clippy -- -D warnings` - treat warnings as errors
 
-### Check Shell Scripts
-```bash
-just check-sh
-```
-Lints shell scripts. Currently checks the `install` script.
-
-**Requirements**: Requires `shellcheck` to be installed. The command will provide installation instructions if not available.
-
 ## Important Guidelines
 
 ### MANDATORY: Run Checks After Changes
@@ -64,13 +56,6 @@ Before considering a task complete: all checks MUST pass AND all clippy warnings
 4. **Check clippy**: `just clippy`
    - If warnings → fix ALL → return to step 2
 5. Repeat until: zero compilation errors AND zero clippy warnings
-
-**Shell script (install script):**
-1. Edit the `install` script
-2. Format: use `/code-format` skill (run `just fmt-sh`)
-3. **Check shellcheck**: `just check-sh`
-   - If warnings → fix ALL → return to step 2
-4. Repeat until: zero shellcheck warnings
 
 ## Common Mistakes to Avoid
 

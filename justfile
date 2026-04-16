@@ -33,55 +33,6 @@ fmt-rs-check:
 fmt-rs-file FILE:
     cargo +nightly fmt -- {{FILE}}
 
-# Format shell scripts (shfmt)
-[group: 'format']
-fmt-sh:
-    #!/usr/bin/env bash
-    set -e # Exit on error
-
-    # Check if shfmt is installed
-    if ! command -v "shfmt" &> /dev/null; then
-        >&2 echo "=============================================================="
-        >&2 echo "Required command 'shfmt' not available"
-        >&2 echo ""
-        >&2 echo "Please install shfmt using your preferred package manager:"
-        >&2 echo "  brew install shfmt"
-        >&2 echo "  apt-get install shfmt"
-        >&2 echo "  pacman -S shfmt"
-        >&2 echo "  go install mvdan.cc/sh/v3/cmd/shfmt@latest"
-        >&2 echo ""
-        >&2 echo "See: https://github.com/mvdan/sh"
-        >&2 echo "=============================================================="
-        exit 1
-    fi
-
-    shfmt --write install
-
-# Check shell scripts format (shfmt --diff)
-[group: 'format']
-fmt-sh-check:
-    #!/usr/bin/env bash
-    set -e # Exit on error
-
-    # Check if shfmt is installed
-    if ! command -v "shfmt" &> /dev/null; then
-        >&2 echo "=============================================================="
-        >&2 echo "Required command 'shfmt' not available"
-        >&2 echo ""
-        >&2 echo "Please install shfmt using your preferred package manager:"
-        >&2 echo "  brew install shfmt"
-        >&2 echo "  apt-get install shfmt"
-        >&2 echo "  pacman -S shfmt"
-        >&2 echo "  go install mvdan.cc/sh/v3/cmd/shfmt@latest"
-        >&2 echo ""
-        >&2 echo "See: https://github.com/mvdan/sh"
-        >&2 echo "=============================================================="
-        exit 1
-    fi
-
-    shfmt --diff install
-
-
 ## Check
 
 alias check := check-rs
@@ -95,31 +46,6 @@ check-rs *EXTRA_FLAGS:
 [group: 'check']
 clippy *EXTRA_FLAGS:
     cargo clippy --all-targets {{EXTRA_FLAGS}}
-
-# Lint shell scripts (shellcheck)
-[group: 'check']
-check-sh:
-    #!/usr/bin/env bash
-    set -e # Exit on error
-
-    # Check if shellcheck is installed
-    if ! command -v "shellcheck" &> /dev/null; then
-        >&2 echo "=============================================================="
-        >&2 echo "Required command 'shellcheck' not available"
-        >&2 echo ""
-        >&2 echo "Please install shellcheck using your preferred package manager:"
-        >&2 echo "  brew install shellcheck"
-        >&2 echo "  apt-get install shellcheck"
-        >&2 echo "  dnf install ShellCheck"
-        >&2 echo "  pacman -S shellcheck"
-        >&2 echo ""
-        >&2 echo "See: https://github.com/koalaman/shellcheck"
-        >&2 echo "=============================================================="
-        exit 1
-    fi
-
-    shellcheck -x -o all -S style install
-
 
 ## Build
 
