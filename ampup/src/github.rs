@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use futures::StreamExt;
 use serde::Deserialize;
 
-use crate::rate_limiter::GitHubRateLimiter;
+use crate::{DEFAULT_REPO, DEFAULT_SELF_REPO, rate_limiter::GitHubRateLimiter};
 
 const AMPUP_API_URL: &str = "https://ampup.sh/api";
 const GITHUB_API_URL: &str = "https://api.github.com";
@@ -236,12 +236,7 @@ impl GitHubClient {
             .build()
             .context("Failed to create request client")?;
 
-        // Use custom endpoints for edgeandnode/amp and otherwise leverages the github api
-        let api = if repo == "edgeandnode/amp" && github_token.is_none() {
-            AMPUP_API_URL.to_string()
-        } else {
-            format!("{}/repos/{}/releases", GITHUB_API_URL, repo)
-        };
+        let api = release_api_base(&repo);
 
         let rate_limiter = Arc::new(GitHubRateLimiter::new(github_token.is_some()));
 
@@ -570,5 +565,83 @@ impl GitHubClient {
         }
 
         Ok(buffer)
+    }
+}
+
+fn release_api_base(repo: &str) -> String {
+    match repo_slug(repo) {
+        Some(slug) => format!("{}/{}", AMPUP_API_URL, slug),
+        None => format!("{}/repos/{}/releases", GITHUB_API_URL, repo),
+    }
+}
+
+fn repo_slug(repo: &str) -> Option<&'static str> {
+    match repo {
+        DEFAULT_REPO => Some("amp"),
+        DEFAULT_SELF_REPO => Some("ampup"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::Result;
+
+    use super::*;
+
+    #[test]
+    fn release_api_base_with_amp_repo_uses_ampup_api_slug() {
+        //* When
+        let api_base = release_api_base(DEFAULT_REPO);
+
+        //* Then
+        assert_eq!(
+            api_base, "https://ampup.sh/api/amp",
+            "amp releases should use the ampup API amp slug"
+        );
+    }
+
+    #[test]
+    fn release_api_base_with_ampup_repo_uses_ampup_api_slug() {
+        //* When
+        let api_base = release_api_base(DEFAULT_SELF_REPO);
+
+        //* Then
+        assert_eq!(
+            api_base, "https://ampup.sh/api/ampup",
+            "ampup releases should use the ampup API ampup slug"
+        );
+    }
+
+    #[test]
+    fn new_with_ampup_repo_and_github_token_uses_ampup_api() -> Result<()> {
+        //* Given
+        let github_token = Some("test-token".to_string());
+
+        //* When
+        let client = GitHubClient::new(DEFAULT_SELF_REPO.to_string(), github_token)?;
+
+        //* Then
+        assert_eq!(
+            client.api, "https://ampup.sh/api/ampup",
+            "supported repos should use ampup.sh API even when a GitHub token is configured"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn release_api_base_with_other_repo_uses_github_releases_api() {
+        //* Given
+        let repo = "some-owner/some-repo";
+
+        //* When
+        let api_base = release_api_base(repo);
+
+        //* Then
+        assert_eq!(
+            api_base, "https://api.github.com/repos/some-owner/some-repo/releases",
+            "unsupported repos should keep using the GitHub releases API"
+        );
     }
 }
