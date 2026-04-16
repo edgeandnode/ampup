@@ -1,4 +1,4 @@
-use ampup::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO, commands};
+use ampup::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO, DEFAULT_SELF_REPO, commands};
 use console::style;
 
 /// The ampd installer and version manager
@@ -165,7 +165,7 @@ enum SelfCommands {
     /// Update ampup itself to the latest version
     Update {
         /// GitHub repository in format "owner/repo"
-        #[arg(long, default_value_t = DEFAULT_REPO.to_string())]
+        #[arg(long, default_value_t = DEFAULT_SELF_REPO.to_string())]
         repo: String,
 
         /// GitHub token for private repository access (defaults to $GITHUB_TOKEN)
