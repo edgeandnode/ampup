@@ -172,7 +172,7 @@ impl std::error::Error for GitHubError {}
 
 /// A release asset resolved from GitHub metadata, ready to download.
 ///
-/// Produced by [`GitHubClient::resolve_release_assets`] and consumed by
+/// Produced by [`ReleaseAssets::resolve`] and consumed by
 /// [`GitHubClient::download_resolved_asset`]. This allows fetching release
 /// metadata once and then downloading multiple assets without redundant API
 /// calls.
@@ -184,6 +184,45 @@ pub struct ResolvedAsset {
     pub name: String,
     /// Direct browser download URL (used for public repos).
     pub url: String,
+}
+
+/// The assets of a single fetched release.
+///
+/// Produced by [`GitHubClient::fetch_release_assets`] so that release metadata
+/// is fetched once and individual assets are then resolved in memory via
+/// [`ReleaseAssets::resolve`] — no redundant API calls, and each caller pairs a
+/// resolved asset with its own request directly instead of relying on the
+/// positional alignment of two parallel collections.
+pub struct ReleaseAssets {
+    repo: String,
+    version: String,
+    assets: Vec<Asset>,
+}
+
+impl ReleaseAssets {
+    /// Resolve a single asset by name against this release.
+    ///
+    /// Returns `Ok(Some(_))` when the asset is present, `Ok(None)` when an
+    /// *optional* asset is absent, and `Err(GitHubError::AssetNotFound)` when a
+    /// *required* asset (`optional == false`) is missing.
+    pub fn resolve(&self, name: &str, optional: bool) -> anyhow::Result<Option<ResolvedAsset>> {
+        match self.assets.iter().find(|a| a.name == name) {
+            Some(asset) => Ok(Some(ResolvedAsset {
+                id: asset.id,
+                name: asset.name.clone(),
+                url: asset.url.clone(),
+            })),
+            // Optional artifacts may be missing from a release; skip them.
+            None if optional => Ok(None),
+            None => Err(GitHubError::AssetNotFound {
+                repo: self.repo.clone(),
+                asset_name: name.to_string(),
+                version: self.version.clone(),
+                available_assets: self.assets.iter().map(|a| a.name.clone()).collect(),
+            }
+            .into()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -320,29 +359,18 @@ impl GitHubClient {
             })
     }
 
-    /// Resolve multiple asset names from a single release, fetching the release
-    /// metadata only once.
+    /// Fetch a release's asset metadata with a single API call.
     ///
-    /// Returns a `ResolvedAsset` for each requested name. Fails with
-    /// `GitHubError::AssetNotFound` on the first name that does not match any
-    /// asset in the release.
-    pub async fn resolve_release_assets(
-        &self,
-        version: &str,
-        asset_names: &[&str],
-    ) -> Result<Vec<ResolvedAsset>> {
+    /// The returned [`ReleaseAssets`] resolves individual assets in memory via
+    /// [`ReleaseAssets::resolve`], so callers can fetch once and resolve many
+    /// without re-hitting the API and without aligning parallel collections.
+    pub async fn fetch_release_assets(&self, version: &str) -> anyhow::Result<ReleaseAssets> {
         let release = self.get_tagged_release(version).await?;
-
-        let mut resolved = Vec::with_capacity(asset_names.len());
-        for &name in asset_names {
-            let asset = self.find_asset(&release, name, version)?;
-            resolved.push(ResolvedAsset {
-                id: asset.id,
-                name: asset.name.clone(),
-                url: asset.url.clone(),
-            });
-        }
-        Ok(resolved)
+        Ok(ReleaseAssets {
+            repo: self.repo.clone(),
+            version: version.to_string(),
+            assets: release.assets,
+        })
     }
 
     /// Download a previously resolved asset without re-fetching release

@@ -10,7 +10,7 @@ components: "app:ampup"
 
 ## Summary
 
-ampup is the official version manager and installer for Amp binaries (ampd and ampctl), similar to rustup or nvm. It manages downloading pre-built binaries from GitHub releases, installing multiple versions side-by-side, switching between versions via symlinks, building from source (branch, commit, PR, or local path), and self-updating.
+ampup is the official version manager and installer for Amp binaries (`ampd`, plus the optional `ampctl` and `ampsql`), similar to rustup or nvm. It manages downloading pre-built binaries from GitHub releases, installing multiple versions side-by-side, switching between versions via symlinks, building from source (branch, commit, PR, or local path), and self-updating. `ampd` is the required core binary; `ampctl` and `ampsql` are installed on a best-effort basis and skipped when a release (or source tree) does not provide them.
 
 ## Table of Contents
 
@@ -21,9 +21,9 @@ ampup is the official version manager and installer for Amp binaries (ampd and a
 
 ## Key Concepts
 
-- **Version Manager**: Manages multiple installed versions of ampd/ampctl with symlink-based activation
+- **Version Manager**: Manages multiple installed versions of ampd/ampctl/ampsql with symlink-based activation
 - **Installer**: Downloads pre-built binaries from GitHub releases and extracts to versioned directories
-- **Builder**: Compiles ampd/ampctl from source using cargo, supporting branch, commit, PR, or local path builds
+- **Builder**: Compiles ampd/ampctl/ampsql from source using cargo, supporting branch, commit, PR, or local path builds
 - **Self-updater**: Atomic in-place binary replacement for updating ampup itself to the latest version
 - **Active Version**: The currently selected version, tracked via symlinks in `~/.amp/bin/` and `.version` file
 
@@ -37,7 +37,7 @@ Install ampup using the shell installer:
 curl -sSf https://ampup.sh/install | sh
 ```
 
-The installer downloads the appropriate binary for your platform, runs `ampup init` to set up directories and PATH, and installs the latest ampd/ampctl version.
+The installer downloads the appropriate binary for your platform, runs `ampup init` to set up directories and PATH, and installs the latest ampd version (along with ampctl and ampsql when available).
 
 ### Install a Specific Version
 
@@ -116,7 +116,7 @@ Clones the repository (or uses local path), runs `cargo build --release`, and in
 ### Update to Latest
 
 ```bash
-# Update ampd/ampctl to latest release
+# Update ampd/ampctl/ampsql to latest release
 ampup update
 
 # Update with parallel downloads
@@ -147,17 +147,21 @@ The self-update performs atomic in-place replacement of the running executable.
 ├── bin/                        # Symlinks to active version
 │   ├── ampup                   # The ampup binary itself
 │   ├── ampd -> ../versions/v0.1.0/ampd      # Symlink to active ampd
-│   └── ampctl -> ../versions/v0.1.0/ampctl  # Symlink to active ampctl
+│   ├── ampctl -> ../versions/v0.1.0/ampctl  # Symlink to active ampctl (when present)
+│   └── ampsql -> ../versions/v0.1.0/ampsql  # Symlink to active ampsql (when present)
 ├── versions/                   # All installed versions
 │   ├── v0.1.0/
 │   │   ├── ampd
-│   │   └── ampctl
+│   │   ├── ampctl
+│   │   └── ampsql
 │   ├── v0.2.0/
 │   │   ├── ampd
-│   │   └── ampctl
+│   │   ├── ampctl
+│   │   └── ampsql
 │   └── my-dev-build/
 │       ├── ampd
-│       └── ampctl
+│       ├── ampctl
+│       └── ampsql
 └── .version                    # Tracks currently active version (e.g., "v0.1.0")
 ```
 
@@ -166,7 +170,7 @@ The self-update performs atomic in-place replacement of the running executable.
 1. User runs `ampup use <version>`
 2. Verify version exists in `~/.amp/versions/<version>/`
 3. Remove existing symlinks in `~/.amp/bin/`
-4. Create new symlinks pointing to `~/.amp/versions/<version>/{ampd,ampctl}`
+4. Create new symlinks pointing to `~/.amp/versions/<version>/ampd` (required) and to `ampctl`/`ampsql` when those binaries are present
 5. Write version string to `~/.amp/.version`
 
 ### Installation Flow
@@ -175,20 +179,21 @@ The self-update performs atomic in-place replacement of the running executable.
 2. Resolve GitHub token (explicit `--github-token` → `gh auth token` → unauthenticated)
 3. Detect platform (Linux/Darwin) and architecture (x86_64/aarch64)
 4. Query GitHub API for release (latest or specific tag)
-5. Download artifacts concurrently (bounded by `-j`, default 4): `ampd-{platform}-{arch}`, `ampctl-{platform}-{arch}`
+5. Resolve release metadata once and select artifacts to download: `ampd-{platform}-{arch}` (required), plus `ampctl-{platform}-{arch}` and `ampsql-{platform}-{arch}` when present (optional artifacts absent from the release are skipped with a warning)
+6. Download the selected artifacts concurrently (bounded by `-j`, default 4)
    - Downloads write to a staging directory (sibling of version dir for atomic rename)
    - Each download is verified (non-empty) and retried once on failure
-   - If any download fails, in-flight downloads are cancelled and the staging directory is cleaned up
-6. Atomically move staging directory to `~/.amp/versions/<version>/`
-7. Activate version (create symlinks) — only after all downloads succeed
+   - If any selected download fails, in-flight downloads are cancelled and the staging directory is cleaned up
+7. Atomically move staging directory to `~/.amp/versions/<version>/`
+8. Activate version (create symlinks) — only after all downloads succeed
 
 ### Build Flow
 
 1. User runs `ampup build` with source specifier
 2. Clone repository (or use local path)
-3. Run `cargo build --release` in workspace
+3. Run `cargo build --release -p ampd` (required), then best-effort `-p ampctl` and `-p ampsql`
 4. Extract version from `ampd --version` output
-5. Copy `target/release/{ampd,ampctl}` to `~/.amp/versions/<version>/`
+5. Copy `target/release/ampd` (required) plus `ampctl`/`ampsql` when produced to `~/.amp/versions/<version>/`
 6. Activate version (create symlinks)
 
 ### Communication

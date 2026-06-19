@@ -20,7 +20,8 @@ impl Installer {
         }
     }
 
-    /// Install ampd and ampctl from a GitHub release.
+    /// Install ampd (required) plus the optional ampctl and ampsql binaries
+    /// from a GitHub release.
     pub async fn install_from_release(
         &self,
         version: &str,
@@ -31,22 +32,31 @@ impl Installer {
 
         let ampd_artifact = format!("ampd-{}-{}", platform.as_str(), arch.as_str());
         let ampctl_artifact = format!("ampctl-{}-{}", platform.as_str(), arch.as_str());
+        let ampsql_artifact = format!("ampsql-{}-{}", platform.as_str(), arch.as_str());
 
         ui::info!(
-            "Downloading {} ({}, {})",
+            "Downloading {} ({}, {}, {})",
             ui::version(version),
             ampd_artifact,
-            ampctl_artifact
+            ampctl_artifact,
+            ampsql_artifact
         );
 
         let tasks = vec![
             DownloadTask {
                 artifact_name: ampd_artifact,
                 dest_filename: "ampd".to_string(),
+                optional: false,
             },
             DownloadTask {
                 artifact_name: ampctl_artifact,
                 dest_filename: "ampctl".to_string(),
+                optional: true,
+            },
+            DownloadTask {
+                artifact_name: ampsql_artifact,
+                dest_filename: "ampsql".to_string(),
+                optional: true,
             },
         ];
 

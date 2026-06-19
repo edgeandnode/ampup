@@ -291,6 +291,18 @@ async fn build_from_local_path_with_custom_name() -> Result<()> {
         fs::set_permissions(&mock_ampctl, perms)?;
     }
 
+    // Create mock ampsql binary
+    let mock_ampsql = target_dir.join("ampsql");
+    fs::write(&mock_ampsql, "#!/bin/sh\necho 'ampsql test-version'")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&mock_ampsql)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&mock_ampsql, perms)?;
+    }
+
     // Mock cargo by creating a fake cargo script
     let mock_cargo_dir = TempDir::new()?;
     let mock_cargo = mock_cargo_dir.path().join("cargo");

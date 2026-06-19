@@ -51,7 +51,7 @@ pub async fn run(
         ui::info!("Switching to version {}", ui::version(&version));
         crate::commands::use_version::switch_to_version(&version_manager, &version)?;
         ui::success!("Switched to version {}", ui::version(&version));
-        ui::detail!("Run 'ampd --version' and 'ampctl --version' to verify installation");
+        ui::detail!("Run 'ampd --version' to verify installation");
         return Ok(());
     }
 
@@ -94,8 +94,8 @@ pub async fn run(
         .install_from_release(&version, platform, arch)
         .await?;
 
-    ui::success!("Installed ampd and ampctl {}", ui::version(&version));
-    ui::detail!("Run 'ampd --version' and 'ampctl --version' to verify installation");
+    ui::success!("Installed amp {}", ui::version(&version));
+    ui::detail!("Run 'ampd --version' to verify installation");
 
     Ok(())
 }

@@ -73,11 +73,11 @@ impl TempInstallDir {
     }
 }
 
-/// Helper for creating mock ampd and ampctl binaries for testing.
+/// Helper for creating mock ampd, ampctl, and ampsql binaries for testing.
 pub struct MockBinary;
 
 impl MockBinary {
-    /// Create mock ampd and ampctl binaries for a specific version.
+    /// Create mock ampd, ampctl, and ampsql binaries for a specific version.
     pub fn create(temp: &TempInstallDir, version: &str) -> Result<()> {
         let version_dir = temp.version_dir(version);
         fs::create_dir_all(&version_dir)
@@ -115,6 +115,23 @@ impl MockBinary {
             perms.set_mode(0o755);
             fs::set_permissions(&ampctl_path, perms)
                 .context("Failed to set executable permissions on ampctl")?;
+        }
+
+        // Create mock ampsql binary
+        let ampsql_path = version_dir.join("ampsql");
+        let ampsql_script = format!("#!/bin/sh\necho 'ampsql {}'", version);
+        fs::write(&ampsql_path, ampsql_script)
+            .with_context(|| format!("Failed to write mock ampsql binary for {}", version))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&ampsql_path)
+                .context("Failed to get ampsql metadata")?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&ampsql_path, perms)
+                .context("Failed to set executable permissions on ampsql")?;
         }
 
         Ok(())
