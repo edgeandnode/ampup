@@ -193,7 +193,7 @@ The self-update performs atomic in-place replacement of the running executable.
 2. Clone repository (or use local path)
 3. Run `cargo build --release -p ampd` (required), then best-effort `-p ampctl` and `-p ampsql`
 4. Extract version from `ampd --version` output
-5. Copy `target/release/ampd` (required) plus `ampctl`/`ampsql` when produced to `~/.amp/versions/<version>/`
+5. Copy `target/release/ampd` (required) plus `ampctl`/`ampsql` when produced to `~/.amp/versions/<version>/`; when an optional binary is not produced, any stale copy from a previous build of the same version is removed so activation cannot symlink an outdated binary
 6. Activate version (create symlinks)
 
 ### Communication

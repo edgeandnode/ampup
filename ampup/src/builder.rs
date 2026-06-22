@@ -568,79 +568,67 @@ fn build_and_install(
             .context("Failed to set executable permissions on ampd")?;
     }
 
-    // Build ampctl
-    ui::info!("Building ampctl");
-
-    let mut ampctl_args = vec!["build", "--release", "-p", "ampctl"];
-    if let Some(ref j) = jobs_str {
-        ampctl_args.extend(["-j", j]);
-    }
-
-    let ampctl_status = Command::new("cargo")
-        .args(&ampctl_args)
-        .current_dir(repo_path)
-        .status()
-        .context("Failed to execute cargo build")?;
-
-    let ampctl_source = repo_path.join("target/release/ampctl");
-    if ampctl_status.success() && ampctl_source.exists() {
-        // Copy ampctl binary
-        let ampctl_dest = version_dir.join("ampctl");
-        fs::copy(&ampctl_source, &ampctl_dest).context("Failed to copy ampctl binary")?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&ampctl_dest)
-                .context("Failed to get ampctl metadata")?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&ampctl_dest, perms)
-                .context("Failed to set executable permissions on ampctl")?;
-        }
-    } else {
-        ui::warn!("Skipping ampctl: build did not produce a binary");
-    }
-
-    // Build ampsql
-    ui::info!("Building ampsql");
-
-    let mut ampsql_args = vec!["build", "--release", "-p", "ampsql"];
-    if let Some(ref j) = jobs_str {
-        ampsql_args.extend(["-j", j]);
-    }
-
-    let ampsql_status = Command::new("cargo")
-        .args(&ampsql_args)
-        .current_dir(repo_path)
-        .status()
-        .context("Failed to execute cargo build")?;
-
-    let ampsql_source = repo_path.join("target/release/ampsql");
-    if ampsql_status.success() && ampsql_source.exists() {
-        // Copy ampsql binary
-        let ampsql_dest = version_dir.join("ampsql");
-        fs::copy(&ampsql_source, &ampsql_dest).context("Failed to copy ampsql binary")?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&ampsql_dest)
-                .context("Failed to get ampsql metadata")?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&ampsql_dest, perms)
-                .context("Failed to set executable permissions on ampsql")?;
-        }
-    } else {
-        ui::warn!("Skipping ampsql: build did not produce a binary");
-    }
+    // Build the optional binaries best-effort
+    build_optional_binary("ampctl", repo_path, &version_dir, jobs_str.as_deref())?;
+    build_optional_binary("ampsql", repo_path, &version_dir, jobs_str.as_deref())?;
 
     // Activate this version
     version_manager.activate(version_label)?;
 
     ui::success!("Built and installed amp {}", ui::version(version_label));
     ui::detail!("Run 'ampd --version' to verify installation");
+
+    Ok(())
+}
+
+/// Build an optional binary best-effort and install it into `version_dir`.
+///
+/// On success the freshly built binary is copied in (and made executable on Unix).
+/// When the build does not produce a binary, any stale copy from a previous build
+/// of the same version is removed so `activate()` cannot symlink an outdated binary.
+fn build_optional_binary(
+    name: &str,
+    repo_path: &Path,
+    version_dir: &Path,
+    jobs_str: Option<&str>,
+) -> Result<()> {
+    ui::info!("Building {name}");
+
+    let mut args = vec!["build", "--release", "-p", name];
+    if let Some(j) = jobs_str {
+        args.extend(["-j", j]);
+    }
+
+    let status = Command::new("cargo")
+        .args(&args)
+        .current_dir(repo_path)
+        .status()
+        .context("Failed to execute cargo build")?;
+
+    let source = repo_path.join("target/release").join(name);
+    let dest = version_dir.join(name);
+
+    if status.success() && source.exists() {
+        fs::copy(&source, &dest).with_context(|| format!("Failed to copy {name} binary"))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .with_context(|| format!("Failed to get {name} metadata"))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .with_context(|| format!("Failed to set executable permissions on {name}"))?;
+        }
+    } else {
+        // Remove any stale copy from a previous build so activate() won't symlink it.
+        if dest.exists() {
+            fs::remove_file(&dest)
+                .with_context(|| format!("Failed to remove stale {name} binary"))?;
+        }
+        ui::warn!("Skipping {name}: build did not produce a binary");
+    }
 
     Ok(())
 }
