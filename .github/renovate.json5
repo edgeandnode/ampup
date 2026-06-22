@@ -23,11 +23,18 @@
     'github-actions',
     'custom.regex',
   ],
-  ignoreDeps: [
-    // Ignore serde_yaml because it is marked as deprecated. No new releases will be made.
-    'serde_yaml',
-  ],
   packageRules: [
+    // Only open PRs for major and minor cargo updates. Patch bumps are left to
+    // the scheduled lockFileMaintenance PR to avoid per-patch PR noise.
+    {
+      matchManagers: [
+        'cargo',
+      ],
+      matchUpdateTypes: [
+        'patch',
+      ],
+      enabled: false,
+    },
     // Group console-rs terminal UI crates (must upgrade together for compatibility)
     {
       groupName: 'console-rs terminal UI',
@@ -36,8 +43,18 @@
       ],
       matchPackageNames: [
         '/^console$/',
-        '/^indicatif$/',
         '/^dialoguer$/',
+      ],
+    },
+    // Group the tokio crates with the futures-rs family.
+    {
+      groupName: 'tokio-futures',
+      matchManagers: [
+        'cargo',
+      ],
+      matchPackageNames: [
+        '/^tokio$/',
+        '/^futures(-.*)?$/',
       ],
     },
   ],
