@@ -291,6 +291,18 @@ async fn build_from_local_path_with_custom_name() -> Result<()> {
         fs::set_permissions(&mock_ampctl, perms)?;
     }
 
+    // Create mock ampsql binary
+    let mock_ampsql = target_dir.join("ampsql");
+    fs::write(&mock_ampsql, "#!/bin/sh\necho 'ampsql test-version'")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&mock_ampsql)?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&mock_ampsql, perms)?;
+    }
+
     // Mock cargo by creating a fake cargo script
     let mock_cargo_dir = TempDir::new()?;
     let mock_cargo = mock_cargo_dir.path().join("cargo");
@@ -338,6 +350,121 @@ async fn build_from_local_path_with_custom_name() -> Result<()> {
     assert!(
         temp.version_binary(custom_name).exists(),
         "Binary not installed"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn rebuild_removes_stale_optional_binaries() -> Result<()> {
+    let temp = TempInstallDir::new()?;
+
+    // Create a temporary directory that looks like an amp repo.
+    let fake_repo = TempDir::new()?;
+    let target_dir = fake_repo.path().join("target/release");
+    fs::create_dir_all(&target_dir)?;
+
+    // Helper to write an executable mock binary.
+    let write_executable = |path: &std::path::Path, contents: &str| -> Result<()> {
+        fs::write(path, contents)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(path)?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)?;
+        }
+        Ok(())
+    };
+
+    // Mock ampd, ampctl, and ampsql in the repo's target/release.
+    let ampctl_source = target_dir.join("ampctl");
+    let ampsql_source = target_dir.join("ampsql");
+    write_executable(
+        &target_dir.join("ampd"),
+        "#!/bin/sh\necho 'ampd test-version'",
+    )?;
+    write_executable(&ampctl_source, "#!/bin/sh\necho 'ampctl test-version'")?;
+    write_executable(&ampsql_source, "#!/bin/sh\necho 'ampsql test-version'")?;
+
+    // Mock cargo as a no-op success so the build copies whatever is in target/release.
+    let mock_cargo_dir = TempDir::new()?;
+    let mock_cargo = mock_cargo_dir.path().join("cargo");
+    write_executable(&mock_cargo, "#!/bin/sh\nexit 0")?;
+
+    // Temporarily modify PATH to use mock cargo.
+    let original_path = env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", mock_cargo_dir.path().display(), original_path);
+    unsafe {
+        env::set_var("PATH", &new_path);
+    }
+
+    let label = "stale-test";
+
+    // First build: produces ampd, ampctl, and ampsql.
+    let first = crate::commands::build::run(
+        Some(temp.path().to_path_buf()),
+        None, // repo
+        Some(fake_repo.path().to_path_buf()),
+        None, // branch
+        None, // commit
+        None, // pr
+        Some(label.to_string()),
+        None, // jobs
+    )
+    .await;
+
+    // Drop the optional binaries so the rebuild "skips" them.
+    if first.is_ok() {
+        fs::remove_file(&ampctl_source)?;
+        fs::remove_file(&ampsql_source)?;
+    }
+
+    // Second build of the same label: ampctl/ampsql are no longer produced.
+    let second = crate::commands::build::run(
+        Some(temp.path().to_path_buf()),
+        None, // repo
+        Some(fake_repo.path().to_path_buf()),
+        None, // branch
+        None, // commit
+        None, // pr
+        Some(label.to_string()),
+        None, // jobs
+    )
+    .await;
+
+    // Restore PATH before asserting.
+    unsafe {
+        env::set_var("PATH", &original_path);
+    }
+
+    first?;
+    second?;
+
+    // ampd is required and stays installed.
+    assert!(
+        temp.version_binary(label).exists(),
+        "ampd should remain after rebuild"
+    );
+
+    // Stale optional binaries are removed from the version directory.
+    assert!(
+        !temp.version_dir(label).join("ampctl").exists(),
+        "stale ampctl should be removed on rebuild"
+    );
+    assert!(
+        !temp.version_dir(label).join("ampsql").exists(),
+        "stale ampsql should be removed on rebuild"
+    );
+
+    // Active symlinks for the optional binaries are cleared.
+    assert!(
+        !temp.bin_dir().join("ampctl").exists(),
+        "stale ampctl symlink should be cleared on rebuild"
+    );
+    assert!(
+        !temp.bin_dir().join("ampsql").exists(),
+        "stale ampsql symlink should be cleared on rebuild"
     );
 
     Ok(())

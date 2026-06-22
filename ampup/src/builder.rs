@@ -510,7 +510,7 @@ impl<'a> GitRepo<'a> {
     }
 }
 
-/// Build and install the ampd and ampctl binaries
+/// Build and install the ampd, ampctl, and ampsql binaries
 fn build_and_install(
     version_manager: &VersionManager,
     repo_path: &Path,
@@ -519,49 +519,39 @@ fn build_and_install(
 ) -> Result<()> {
     check_command_exists("cargo")?;
 
-    ui::info!("Building ampd and ampctl");
-
-    let mut args = vec!["build", "--release", "-p", "ampd", "-p", "ampctl"];
-
-    let jobs_str;
-    if let Some(j) = jobs {
-        jobs_str = j.to_string();
-        args.extend(["-j", &jobs_str]);
-    }
-
-    let status = Command::new("cargo")
-        .args(&args)
-        .current_dir(repo_path)
-        .status()
-        .context("Failed to execute cargo build")?;
-
-    if !status.success() {
-        return Err(BuildError::CargoBuildFailed.into());
-    }
-
-    // Find the built binaries
-    let ampd_source = repo_path.join("target/release/ampd");
-    let ampctl_source = repo_path.join("target/release/ampctl");
-
-    if !ampd_source.exists() {
-        return Err(BuildError::BinaryNotFound {
-            path: ampd_source.clone(),
-        }
-        .into());
-    }
-
-    if !ampctl_source.exists() {
-        return Err(BuildError::BinaryNotFound {
-            path: ampctl_source.clone(),
-        }
-        .into());
-    }
+    let jobs_str = jobs.map(|j| j.to_string());
 
     let config = version_manager.config();
 
     // Create version directory
     let version_dir = config.versions_dir.join(version_label);
     fs::create_dir_all(&version_dir).context("Failed to create version directory")?;
+
+    // Build ampd (required)
+    ui::info!("Building ampd");
+
+    let mut ampd_args = vec!["build", "--release", "-p", "ampd"];
+    if let Some(ref j) = jobs_str {
+        ampd_args.extend(["-j", j]);
+    }
+
+    let ampd_status = Command::new("cargo")
+        .args(&ampd_args)
+        .current_dir(repo_path)
+        .status()
+        .context("Failed to execute cargo build")?;
+
+    if !ampd_status.success() {
+        return Err(BuildError::CargoBuildFailed.into());
+    }
+
+    let ampd_source = repo_path.join("target/release/ampd");
+    if !ampd_source.exists() {
+        return Err(BuildError::BinaryNotFound {
+            path: ampd_source.clone(),
+        }
+        .into());
+    }
 
     // Copy ampd binary
     let ampd_dest = version_dir.join("ampd");
@@ -578,29 +568,67 @@ fn build_and_install(
             .context("Failed to set executable permissions on ampd")?;
     }
 
-    // Copy ampctl binary
-    let ampctl_dest = version_dir.join("ampctl");
-    fs::copy(&ampctl_source, &ampctl_dest).context("Failed to copy ampctl binary")?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&ampctl_dest)
-            .context("Failed to get ampctl metadata")?
-            .permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&ampctl_dest, perms)
-            .context("Failed to set executable permissions on ampctl")?;
-    }
+    // Build the optional binaries best-effort
+    build_optional_binary("ampctl", repo_path, &version_dir, jobs_str.as_deref())?;
+    build_optional_binary("ampsql", repo_path, &version_dir, jobs_str.as_deref())?;
 
     // Activate this version
     version_manager.activate(version_label)?;
 
-    ui::success!(
-        "Built and installed ampd and ampctl {}",
-        ui::version(version_label)
-    );
-    ui::detail!("Run 'ampd --version' and 'ampctl --version' to verify installation");
+    ui::success!("Built and installed amp {}", ui::version(version_label));
+    ui::detail!("Run 'ampd --version' to verify installation");
+
+    Ok(())
+}
+
+/// Build an optional binary best-effort and install it into `version_dir`.
+///
+/// On success the freshly built binary is copied in (and made executable on Unix).
+/// When the build does not produce a binary, any stale copy from a previous build
+/// of the same version is removed so `activate()` cannot symlink an outdated binary.
+fn build_optional_binary(
+    name: &str,
+    repo_path: &Path,
+    version_dir: &Path,
+    jobs_str: Option<&str>,
+) -> Result<()> {
+    ui::info!("Building {name}");
+
+    let mut args = vec!["build", "--release", "-p", name];
+    if let Some(j) = jobs_str {
+        args.extend(["-j", j]);
+    }
+
+    let status = Command::new("cargo")
+        .args(&args)
+        .current_dir(repo_path)
+        .status()
+        .context("Failed to execute cargo build")?;
+
+    let source = repo_path.join("target/release").join(name);
+    let dest = version_dir.join(name);
+
+    if status.success() && source.exists() {
+        fs::copy(&source, &dest).with_context(|| format!("Failed to copy {name} binary"))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest)
+                .with_context(|| format!("Failed to get {name} metadata"))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest, perms)
+                .with_context(|| format!("Failed to set executable permissions on {name}"))?;
+        }
+    } else {
+        // Remove any stale copy from a previous build so activate() won't symlink it.
+        if dest.exists() {
+            fs::remove_file(&dest)
+                .with_context(|| format!("Failed to remove stale {name} binary"))?;
+        }
+        ui::warn!("Skipping {name}: build did not produce a binary");
+    }
 
     Ok(())
 }

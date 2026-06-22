@@ -10,6 +10,7 @@ use tokio::{sync::Semaphore, task::JoinSet};
 use crate::{
     github::{GitHubClient, ResolvedAsset},
     progress::ProgressReporter,
+    ui,
 };
 
 // ---------------------------------------------------------------------------
@@ -22,6 +23,9 @@ pub struct DownloadTask {
     pub artifact_name: String,
     /// Destination filename inside the version directory (e.g., "ampd")
     pub dest_filename: String,
+    /// Whether the artifact may be absent from the release. Optional artifacts
+    /// missing from the release are skipped; required ones fail the install.
+    pub optional: bool,
 }
 
 /// Errors that occur during bounded-concurrent download operations.
@@ -173,13 +177,24 @@ impl DownloadManager {
         version_dir: PathBuf,
         reporter: Arc<dyn ProgressReporter>,
     ) -> Result<()> {
-        // Resolve all asset metadata with a single API call so that each
-        // spawned task can download directly without re-fetching the release.
-        let asset_names: Vec<&str> = tasks.iter().map(|t| t.artifact_name.as_str()).collect();
-        let resolved = self
-            .github
-            .resolve_release_assets(version, &asset_names)
-            .await?;
+        // Fetch release metadata once, then resolve each task's asset in the
+        // same iteration that owns the task. Pairing the task with its resolved
+        // asset structurally avoids zipping two parallel collections whose
+        // alignment would only be guaranteed by convention.
+        let release = self.github.fetch_release_assets(version).await?;
+
+        // Drop optional artifacts the release does not provide; a missing
+        // required artifact fails fast via `resolve`.
+        let mut planned: Vec<(DownloadTask, ResolvedAsset)> = Vec::with_capacity(tasks.len());
+        for task in tasks {
+            match release.resolve(&task.artifact_name, task.optional)? {
+                Some(asset) => planned.push((task, asset)),
+                None => ui::warn!(
+                    "Skipping {}: not available in this release",
+                    task.artifact_name
+                ),
+            }
+        }
 
         let parent = version_dir.parent().ok_or_else(|| {
             anyhow::anyhow!("version_dir has no parent: {}", version_dir.display())
@@ -189,13 +204,16 @@ impl DownloadManager {
         let staging_dir =
             tempfile::tempdir_in(parent).context("Failed to create staging directory")?;
 
-        let names: Vec<String> = tasks.iter().map(|t| t.artifact_name.clone()).collect();
-        reporter.set_total(tasks.len(), names);
+        let names: Vec<String> = planned
+            .iter()
+            .map(|(task, _)| task.artifact_name.clone())
+            .collect();
+        reporter.set_total(planned.len(), names);
 
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let mut join_set: JoinSet<std::result::Result<String, DownloadError>> = JoinSet::new();
 
-        for (task, asset) in tasks.into_iter().zip(resolved) {
+        for (task, asset) in planned {
             let github = self.github.clone();
             let sem = semaphore.clone();
             let staging_path = staging_dir.path().to_path_buf();
@@ -786,10 +804,12 @@ mod tests {
                 DownloadTask {
                     artifact_name: "ampd-linux-x86_64".to_string(),
                     dest_filename: "ampd".to_string(),
+                    optional: false,
                 },
                 DownloadTask {
                     artifact_name: "ampctl-linux-x86_64".to_string(),
                     dest_filename: "ampctl".to_string(),
+                    optional: false,
                 },
             ]
         }
@@ -860,6 +880,52 @@ mod tests {
             );
         }
 
+        /// A missing *optional* asset is skipped; required artifacts still install.
+        #[tokio::test]
+        async fn download_all_with_missing_optional_asset_skips_it() {
+            //* Given — release only contains ampd; ampctl is optional and absent
+            let fixture = TestFixture::new(
+                &["ampd-linux-x86_64"],
+                vec![Route::ok(
+                    "download/ampd-linux-x86_64",
+                    b"fake-ampd-binary".to_vec(),
+                )],
+                4,
+            )
+            .await;
+
+            let tasks = vec![
+                DownloadTask {
+                    artifact_name: "ampd-linux-x86_64".to_string(),
+                    dest_filename: "ampd".to_string(),
+                    optional: false,
+                },
+                DownloadTask {
+                    artifact_name: "ampctl-linux-x86_64".to_string(),
+                    dest_filename: "ampctl".to_string(),
+                    optional: true,
+                },
+            ];
+
+            //* When
+            let result = fixture.download(tasks).await;
+
+            //* Then
+            assert!(
+                result.is_ok(),
+                "a missing optional asset should not fail the install: {:?}",
+                result.err()
+            );
+            assert!(
+                fixture.version_dir.join("ampd").exists(),
+                "required ampd should be installed"
+            );
+            assert!(
+                !fixture.version_dir.join("ampctl").exists(),
+                "absent optional ampctl should be skipped, not installed"
+            );
+        }
+
         /// `-j 1` (sequential) mode still produces a correct install.
         #[tokio::test]
         async fn download_all_with_sequential_mode_succeeds() {
@@ -913,6 +979,7 @@ mod tests {
             let tasks = vec![DownloadTask {
                 artifact_name: "ampd-linux-x86_64".to_string(),
                 dest_filename: "ampd".to_string(),
+                optional: false,
             }];
 
             //* When
@@ -952,6 +1019,7 @@ mod tests {
             let tasks = vec![DownloadTask {
                 artifact_name: "ampd-linux-x86_64".to_string(),
                 dest_filename: "ampd".to_string(),
+                optional: false,
             }];
 
             //* When
