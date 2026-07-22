@@ -212,10 +212,18 @@ enum AdbcCommands {
     },
 
     /// List installed ADBC drivers for the active version
-    List,
+    List {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+    },
 
     /// Uninstall an ADBC driver
     Uninstall {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+
         /// Driver to uninstall (e.g. postgresql)
         driver: String,
     },
@@ -322,11 +330,14 @@ async fn run() -> anyhow::Result<()> {
                 commands::adbc::install(&driver, install_dir, repo, github_token, arch, platform)
                     .await?;
             }
-            AdbcCommands::List => {
-                commands::adbc::list()?;
+            AdbcCommands::List { install_dir } => {
+                commands::adbc::list(install_dir)?;
             }
-            AdbcCommands::Uninstall { driver } => {
-                commands::adbc::uninstall(&driver)?;
+            AdbcCommands::Uninstall {
+                install_dir,
+                driver,
+            } => {
+                commands::adbc::uninstall(install_dir, &driver)?;
             }
         },
         None => {

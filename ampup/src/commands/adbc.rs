@@ -110,15 +110,96 @@ fn place_driver(staging: &Path, driver_dir: &Path, lib_name: &str) -> Result<()>
     Ok(())
 }
 
-/// List installed ADBC drivers for the active version.
-pub fn list() -> Result<()> {
-    bail!("`ampup adbc list` is not yet implemented");
+/// List installed ADBC drivers for the active amp version.
+pub fn list(install_dir: Option<PathBuf>) -> Result<()> {
+    let config = Config::new(install_dir)?;
+    let version_manager = VersionManager::new(config);
+
+    let Some(version) = version_manager.get_current()? else {
+        ui::info!("No active amp version");
+        return Ok(());
+    };
+
+    let drivers = installed_drivers(&version_manager.config().drivers_dir(&version))?;
+    if drivers.is_empty() {
+        ui::info!(
+            "No ADBC drivers installed for amp {}",
+            ui::version(&version)
+        );
+        return Ok(());
+    }
+
+    ui::info!("Installed ADBC drivers for amp {}:", ui::version(&version));
+    for driver in drivers {
+        println!("    {driver}");
+    }
+    Ok(())
 }
 
-/// Uninstall an ADBC driver.
-pub fn uninstall(driver: &str) -> Result<()> {
+/// Uninstall an ADBC driver from the active amp version.
+pub fn uninstall(install_dir: Option<PathBuf>, driver: &str) -> Result<()> {
     let driver = parse_driver(driver)?;
-    bail!("`ampup adbc uninstall {driver}` is not yet implemented");
+
+    let config = Config::new(install_dir)?;
+    let version_manager = VersionManager::new(config);
+
+    let version = version_manager
+        .get_current()?
+        .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first"))?;
+
+    let driver_dir = version_manager
+        .config()
+        .driver_dir(&version, driver.as_str());
+    if !driver_dir.exists() {
+        bail!(
+            "the {driver} driver is not installed for amp {}",
+            ui::version(&version)
+        );
+    }
+
+    fs::remove_dir_all(&driver_dir).context("failed to remove the driver directory")?;
+    // Tidy up an otherwise-empty drivers directory; ignore the error when it
+    // still holds other drivers (or a leftover staging dir).
+    let _ = fs::remove_dir(version_manager.config().drivers_dir(&version));
+
+    ui::info!(
+        "Uninstalled {} driver from amp {}",
+        driver,
+        ui::version(&version)
+    );
+    Ok(())
+}
+
+/// The catalog drivers currently installed under `drivers_dir`.
+///
+/// Only complete installs count: an entry must be a directory named after a
+/// known driver and hold a `manifest.toml`, which skips leftover staging
+/// directories and partial installs. Returns empty when `drivers_dir` is
+/// absent (a version with no drivers installed).
+fn installed_drivers(drivers_dir: &Path) -> Result<Vec<Driver>> {
+    if !drivers_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut drivers = Vec::new();
+    for entry in fs::read_dir(drivers_dir).context("failed to read the drivers directory")? {
+        let entry = entry.context("failed to read a drivers directory entry")?;
+        if !entry
+            .file_type()
+            .context("failed to determine a drivers entry type")?
+            .is_dir()
+        {
+            continue;
+        }
+        let Some(driver) = entry.file_name().to_str().and_then(Driver::from_name) else {
+            continue;
+        };
+        if entry.path().join("manifest.toml").is_file() {
+            drivers.push(driver);
+        }
+    }
+    drivers.sort_by_key(|d| d.as_str());
+    Ok(drivers)
 }
 
 /// Resolve a driver name against the catalog, with a helpful error listing the
@@ -212,5 +293,46 @@ mod tests {
 
         assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"new");
         assert!(!driver_dir.join("stale.txt").exists());
+    }
+
+    /// Create `drivers_dir/<name>/`, optionally with a `manifest.toml`.
+    fn make_driver_dir(drivers_dir: &Path, name: &str, with_manifest: bool) {
+        let dir = drivers_dir.join(name);
+        fs::create_dir_all(&dir).expect("driver dir");
+        if with_manifest {
+            fs::write(dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
+        }
+    }
+
+    #[test]
+    fn installed_drivers_lists_only_complete_catalog_dirs() {
+        let root = tempfile::tempdir().expect("root");
+        let drivers_dir = root.path().join("drivers");
+        make_driver_dir(&drivers_dir, "postgresql", true); // complete -> included
+        make_driver_dir(&drivers_dir, "mysql", true); // not in catalog -> excluded
+        make_driver_dir(&drivers_dir, ".tmpABC123", true); // leftover staging -> excluded
+        fs::write(drivers_dir.join("stray.txt"), b"x").expect("stray file"); // non-dir -> excluded
+
+        assert_eq!(
+            installed_drivers(&drivers_dir).expect("list"),
+            vec![Driver::Postgresql],
+        );
+    }
+
+    #[test]
+    fn installed_drivers_skips_partial_installs() {
+        let root = tempfile::tempdir().expect("root");
+        let drivers_dir = root.path().join("drivers");
+        make_driver_dir(&drivers_dir, "postgresql", false); // no manifest -> excluded
+
+        assert!(installed_drivers(&drivers_dir).expect("list").is_empty());
+    }
+
+    #[test]
+    fn installed_drivers_on_missing_dir_is_empty() {
+        let root = tempfile::tempdir().expect("root");
+        let drivers_dir = root.path().join("drivers"); // never created
+
+        assert!(installed_drivers(&drivers_dir).expect("list").is_empty());
     }
 }
