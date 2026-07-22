@@ -184,6 +184,9 @@ pub struct ResolvedAsset {
     pub name: String,
     /// Direct browser download URL (used for public repos).
     pub url: String,
+    /// Expected content digest from release metadata (e.g. "sha256:<hex>"),
+    /// or `None` when the release does not advertise one.
+    pub digest: Option<String>,
 }
 
 /// The assets of a single fetched release.
@@ -211,6 +214,7 @@ impl ReleaseAssets {
                 id: asset.id,
                 name: asset.name.clone(),
                 url: asset.url.clone(),
+                digest: asset.digest.clone(),
             })),
             // Optional artifacts may be missing from a release; skip them.
             None if optional => Ok(None),
@@ -238,6 +242,8 @@ struct Asset {
     name: String,
     #[serde(rename = "browser_download_url")]
     url: String,
+    #[serde(default)]
+    digest: Option<String>,
 }
 
 /// Cloneable so `DownloadManager` can move a handle into each spawned task.
