@@ -46,6 +46,13 @@ pub fn extract_and_validate(data: &[u8], dest: &Path, expected_members: &[&str])
             bail!("unexpected member in driver archive: {name}");
         }
 
+        // Only regular files are expected. A symlink/hardlink entry (even under
+        // an allowed name) would be materialized by `unpack` as a link rather
+        // than the archived bytes, so reject anything that isn't a plain file.
+        if !entry.header().entry_type().is_file() {
+            bail!("archive member {name} is not a regular file");
+        }
+
         entry
             .unpack(dest.join(&name))
             .with_context(|| format!("failed to extract {name}"))?;
@@ -140,5 +147,28 @@ mod tests {
         let err = extract_and_validate(&archive, dir.path(), &["lib.so"])
             .expect_err("nested entry should fail");
         assert!(err.to_string().contains("flat file name"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_symlink_entry() {
+        // A symlink named as an allowed member, pointing outside the archive.
+        let mut builder = Builder::new(GzEncoder::new(Vec::new(), Compression::default()));
+        let mut header = Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o644);
+        builder
+            .append_link(&mut header, "libadbc_driver_postgresql.so", "/etc/passwd")
+            .expect("should append symlink entry");
+        let archive = builder
+            .into_inner()
+            .expect("should finish tar")
+            .finish()
+            .expect("should finish gzip");
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let err = extract_and_validate(&archive, dir.path(), MEMBERS)
+            .expect_err("symlink member should fail");
+        assert!(err.to_string().contains("not a regular file"), "got: {err}");
     }
 }
