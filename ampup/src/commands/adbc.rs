@@ -27,7 +27,6 @@ pub async fn install(
     github_token: Option<String>,
     arch: Option<String>,
     platform: Option<String>,
-    _jobs: usize,
 ) -> Result<()> {
     let driver = parse_driver(driver)?;
 

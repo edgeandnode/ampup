@@ -209,10 +209,6 @@ enum AdbcCommands {
         /// Override platform detection (linux, darwin)
         #[arg(long)]
         platform: Option<String>,
-
-        /// Number of concurrent downloads
-        #[arg(short = 'j', long = "jobs", default_value_t = DEFAULT_DOWNLOAD_JOBS)]
-        jobs: usize,
     },
 
     /// List installed ADBC drivers for the active version
@@ -322,18 +318,9 @@ async fn run() -> anyhow::Result<()> {
                 github_token,
                 arch,
                 platform,
-                jobs,
             } => {
-                commands::adbc::install(
-                    &driver,
-                    install_dir,
-                    repo,
-                    github_token,
-                    arch,
-                    platform,
-                    jobs,
-                )
-                .await?;
+                commands::adbc::install(&driver, install_dir, repo, github_token, arch, platform)
+                    .await?;
             }
             AdbcCommands::List => {
                 commands::adbc::list()?;
