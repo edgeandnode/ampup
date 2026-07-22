@@ -187,8 +187,32 @@ enum SelfCommands {
 enum AdbcCommands {
     /// Install an ADBC driver for the active amp version
     Install {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+
         /// Driver to install (e.g. postgresql)
         driver: String,
+
+        /// GitHub repository in format "owner/repo"
+        #[arg(long, default_value_t = DEFAULT_REPO.to_string())]
+        repo: String,
+
+        /// GitHub token for private repository access (defaults to $GITHUB_TOKEN)
+        #[arg(long, env = "GITHUB_TOKEN", hide_env = true)]
+        github_token: Option<String>,
+
+        /// Override architecture detection (x86_64, aarch64)
+        #[arg(long)]
+        arch: Option<String>,
+
+        /// Override platform detection (linux, darwin)
+        #[arg(long)]
+        platform: Option<String>,
+
+        /// Number of concurrent downloads
+        #[arg(short = 'j', long = "jobs", default_value_t = DEFAULT_DOWNLOAD_JOBS)]
+        jobs: usize,
     },
 
     /// List installed ADBC drivers for the active version
@@ -291,8 +315,25 @@ async fn run() -> anyhow::Result<()> {
             }
         },
         Some(Commands::Adbc { command }) => match command {
-            AdbcCommands::Install { driver } => {
-                commands::adbc::install(&driver).await?;
+            AdbcCommands::Install {
+                install_dir,
+                driver,
+                repo,
+                github_token,
+                arch,
+                platform,
+                jobs,
+            } => {
+                commands::adbc::install(
+                    &driver,
+                    install_dir,
+                    repo,
+                    github_token,
+                    arch,
+                    platform,
+                    jobs,
+                )
+                .await?;
             }
             AdbcCommands::List => {
                 commands::adbc::list()?;

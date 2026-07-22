@@ -401,7 +401,7 @@ async fn download_with_retry(
 /// `expected_digest` is the release-metadata digest (e.g. `"sha256:<hex>"`), or
 /// `None` when the release does not provide one, in which case only the
 /// non-empty check applies.
-fn verify_artifact(
+pub(crate) fn verify_artifact(
     artifact_name: &str,
     data: &[u8],
     expected_digest: Option<&str>,

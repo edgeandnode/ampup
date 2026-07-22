@@ -27,6 +27,16 @@ impl Driver {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|d| d.as_str() == name)
     }
+
+    /// The runtime library filename this driver's archive carries on
+    /// `platform` (e.g. `libadbc_driver_postgresql.so` on Linux).
+    pub fn runtime_lib_filename(&self, platform: Platform) -> String {
+        let ext = match platform {
+            Platform::Linux => "so",
+            Platform::Darwin => "dylib",
+        };
+        format!("libadbc_driver_{}.{ext}", self.as_str())
+    }
 }
 
 impl std::fmt::Display for Driver {
@@ -69,5 +79,17 @@ mod tests {
         assert_eq!(Driver::from_name("postgresql"), Some(Driver::Postgresql));
         assert_eq!(Driver::from_name("mysql"), None);
         assert_eq!(Driver::from_name(""), None);
+    }
+
+    #[test]
+    fn runtime_lib_filename_is_platform_specific() {
+        assert_eq!(
+            Driver::Postgresql.runtime_lib_filename(Platform::Linux),
+            "libadbc_driver_postgresql.so",
+        );
+        assert_eq!(
+            Driver::Postgresql.runtime_lib_filename(Platform::Darwin),
+            "libadbc_driver_postgresql.dylib",
+        );
     }
 }
