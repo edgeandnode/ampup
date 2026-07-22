@@ -29,10 +29,21 @@ pub async fn install(
     platform: Option<String>,
 ) -> Result<()> {
     let driver = parse_driver(driver)?;
-
     let config = Config::new(install_dir)?;
-    let token = token::resolve_github_token(github_token);
-    let github = GitHubClient::new(repo, token)?;
+    let github = GitHubClient::new(repo, token::resolve_github_token(github_token))?;
+    install_driver(&github, config, driver, arch, platform).await
+}
+
+/// Fetch, verify, extract, and place `driver` for the active amp version using
+/// an already-constructed GitHub client. Split from [`install`] so tests can
+/// inject a client pointed at a mock server.
+pub(crate) async fn install_driver(
+    github: &GitHubClient,
+    config: Config,
+    driver: Driver,
+    arch: Option<String>,
+    platform: Option<String>,
+) -> Result<()> {
     let version_manager = VersionManager::new(config);
 
     // Drivers are pinned to an installed amp version, so one must be active.
@@ -55,7 +66,7 @@ pub async fn install(
         .resolve(&asset_name, false)?
         .expect("a required asset resolves to Some or errors");
 
-    let data = download_with_retry(&github, &asset).await?;
+    let data = download_with_retry(github, &asset).await?;
     verify_artifact(&asset.name, &data, asset.digest.as_deref())
         .context("driver archive failed verification")?;
 
