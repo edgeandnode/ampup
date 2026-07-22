@@ -3,9 +3,10 @@
 //! Installs destination-specific ADBC driver libraries from the pinned set
 //! shipped with each Amp release, so `ampd` can load them at runtime.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use fs_err as fs;
 
 use crate::{
     adbc::Driver,
@@ -59,9 +60,13 @@ pub async fn install(
     verify_artifact(&asset.name, &data, asset.digest.as_deref())
         .context("driver archive failed verification")?;
 
-    // Extract into a staging dir; placement into the version's drivers
-    // directory is handled separately.
-    let staging = tempfile::tempdir().context("failed to create staging directory")?;
+    // Stage inside the drivers directory so the final rename stays on one
+    // filesystem (atomic, no cross-device copy).
+    let drivers_dir = version_manager.config().drivers_dir(&version);
+    fs::create_dir_all(&drivers_dir).context("failed to create drivers directory")?;
+    let staging =
+        tempfile::tempdir_in(&drivers_dir).context("failed to create staging directory")?;
+
     let lib = driver.runtime_lib_filename(platform);
     archive::extract_and_validate(
         &data,
@@ -69,12 +74,41 @@ pub async fn install(
         &[lib.as_str(), "LICENSE.txt", "NOTICE.txt"],
     )?;
 
-    ui::detail!(
-        "Fetched, verified, and extracted the {} driver ({} bytes)",
+    // Absolute so the manifest's `Driver.shared` resolves regardless of
+    // ampd's working directory.
+    let driver_dir = std::path::absolute(
+        version_manager
+            .config()
+            .driver_dir(&version, driver.as_str()),
+    )
+    .context("failed to resolve driver directory")?;
+    place_driver(staging.path(), &driver_dir, &lib)?;
+    // The staged files now live at `driver_dir`; disarm TempDir cleanup.
+    let _ = staging.keep();
+
+    ui::info!(
+        "Installed {} driver for amp {} at {}",
         driver,
-        data.len()
+        ui::version(&version),
+        driver_dir.display(),
     );
-    bail!("installing the driver into the amp version is not yet implemented");
+    Ok(())
+}
+
+/// Assemble the self-contained driver directory: write the manifest into the
+/// staged files (pointing `Driver.shared` at the final library path), then
+/// atomically move the staged directory into `driver_dir`, replacing any
+/// existing install.
+fn place_driver(staging: &Path, driver_dir: &Path, lib_name: &str) -> Result<()> {
+    let manifest = crate::adbc::driver_manifest(&driver_dir.join(lib_name));
+    fs::write(staging.join("manifest.toml"), manifest)
+        .context("failed to write ADBC driver manifest")?;
+
+    if driver_dir.exists() {
+        fs::remove_dir_all(driver_dir).context("failed to remove the existing driver directory")?;
+    }
+    fs::rename(staging, driver_dir).context("failed to move the driver into place")?;
+    Ok(())
 }
 
 /// List installed ADBC drivers for the active version.
@@ -122,5 +156,62 @@ fn resolve_arch(over: Option<String>) -> Result<Architecture> {
             _ => Err(PlatformError::UnsupportedArchitecture { detected: a }.into()),
         },
         None => Ok(Architecture::detect()?),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LIB: &str = "libadbc_driver_postgresql.so";
+
+    /// Build a staging directory holding the three extracted driver files,
+    /// with `lib_contents` as the library body.
+    fn staged_driver(parent: &Path, lib_contents: &[u8]) -> PathBuf {
+        let staging = tempfile::tempdir_in(parent).expect("staging dir");
+        fs::write(staging.path().join(LIB), lib_contents).expect("write lib");
+        fs::write(staging.path().join("LICENSE.txt"), b"license").expect("write license");
+        fs::write(staging.path().join("NOTICE.txt"), b"notice").expect("write notice");
+        staging.keep()
+    }
+
+    #[test]
+    fn place_driver_writes_files_and_manifest() {
+        let root = tempfile::tempdir().expect("root");
+        let drivers_dir = root.path().join("drivers");
+        fs::create_dir_all(&drivers_dir).expect("drivers dir");
+        let staging = staged_driver(&drivers_dir, b"ELF");
+        let driver_dir = drivers_dir.join("postgresql");
+
+        place_driver(&staging, &driver_dir, LIB).expect("place");
+
+        assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"ELF");
+        assert!(driver_dir.join("LICENSE.txt").exists());
+        assert!(driver_dir.join("NOTICE.txt").exists());
+
+        let manifest =
+            fs::read_to_string(driver_dir.join("manifest.toml")).expect("manifest exists");
+        let parsed: toml::Value = toml::from_str(&manifest).expect("valid TOML");
+        assert_eq!(
+            parsed["Driver"]["shared"].as_str(),
+            Some(driver_dir.join(LIB).to_string_lossy().as_ref()),
+        );
+    }
+
+    #[test]
+    fn place_driver_replaces_an_existing_install() {
+        let root = tempfile::tempdir().expect("root");
+        let drivers_dir = root.path().join("drivers");
+        fs::create_dir_all(&drivers_dir).expect("drivers dir");
+        let driver_dir = drivers_dir.join("postgresql");
+
+        place_driver(&staged_driver(&drivers_dir, b"old"), &driver_dir, LIB).expect("first");
+        // A stray file from the old install must not survive the reinstall.
+        fs::write(driver_dir.join("stale.txt"), b"x").expect("stray file");
+
+        place_driver(&staged_driver(&drivers_dir, b"new"), &driver_dir, LIB).expect("second");
+
+        assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"new");
+        assert!(!driver_dir.join("stale.txt").exists());
     }
 }

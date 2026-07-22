@@ -98,6 +98,18 @@ impl Config {
         self.versions_dir.join(version).join("ampsql")
     }
 
+    /// Get the ADBC drivers directory for a specific version
+    /// (~/.amp/versions/<version>/drivers)
+    pub fn drivers_dir(&self, version: &str) -> PathBuf {
+        self.versions_dir.join(version).join("drivers")
+    }
+
+    /// Get the self-contained directory for a single ADBC driver under a
+    /// version (~/.amp/versions/<version>/drivers/<driver>)
+    pub fn driver_dir(&self, version: &str, driver: &str) -> PathBuf {
+        self.drivers_dir(version).join(driver)
+    }
+
     /// Get the active ampsql binary symlink path
     pub fn active_ampsql_path(&self) -> PathBuf {
         self.bin_dir.join("ampsql")

@@ -4,6 +4,10 @@
 //! This module maps a supported driver plus a target platform/arch to the
 //! release asset that carries it.
 
+use std::path::Path;
+
+use serde::Serialize;
+
 use crate::platform::{Architecture, Platform};
 
 /// A supported ADBC driver, as shipped in Amp releases.
@@ -58,6 +62,36 @@ pub fn asset_name(driver: Driver, platform: Platform, arch: Architecture) -> Str
     )
 }
 
+/// An ADBC driver manifest (`manifest.toml`), the on-disk contract `ampd`
+/// reads to load a driver by absolute path.
+///
+/// Only `Driver.shared` is required; the postgres driver's entrypoint is
+/// derived from its name, so no `entrypoint` key is emitted.
+#[derive(Serialize)]
+struct Manifest {
+    manifest_version: u32,
+    #[serde(rename = "Driver")]
+    driver: DriverSection,
+}
+
+#[derive(Serialize)]
+struct DriverSection {
+    shared: String,
+}
+
+/// Render the `manifest.toml` contents pointing `ampd` at the driver library
+/// at `lib_path` (an absolute path).
+pub fn driver_manifest(lib_path: &Path) -> String {
+    let manifest = Manifest {
+        manifest_version: 1,
+        driver: DriverSection {
+            shared: lib_path.to_string_lossy().into_owned(),
+        },
+    };
+    // Serializing a fixed two-field struct cannot fail.
+    toml::to_string(&manifest).expect("driver manifest serializes")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -90,6 +124,21 @@ mod tests {
         assert_eq!(
             Driver::Postgresql.runtime_lib_filename(Platform::Darwin),
             "libadbc_driver_postgresql.dylib",
+        );
+    }
+
+    #[test]
+    fn driver_manifest_round_trips_the_library_path() {
+        // A path with a quote and a backslash must survive escaping so the
+        // manifest stays valid TOML that parses back to the same path.
+        let path = Path::new("/home/a\"b\\c/drivers/postgresql/libadbc_driver_postgresql.so");
+        let rendered = driver_manifest(path);
+
+        let parsed: toml::Value = toml::from_str(&rendered).expect("manifest is valid TOML");
+        assert_eq!(parsed["manifest_version"].as_integer(), Some(1));
+        assert_eq!(
+            parsed["Driver"]["shared"].as_str(),
+            Some(path.to_string_lossy().as_ref()),
         );
     }
 }
