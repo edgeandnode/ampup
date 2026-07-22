@@ -374,7 +374,7 @@ fn append_extension(path: &Path, ext: &str) -> PathBuf {
 /// already handled at the HTTP layer by `GitHubClient::send_with_rate_limit`,
 /// so a rate-limited request will have been retried there before surfacing
 /// as an error here.
-async fn download_with_retry(
+pub(crate) async fn download_with_retry(
     github: &GitHubClient,
     asset: &ResolvedAsset,
 ) -> std::result::Result<Vec<u8>, DownloadError> {

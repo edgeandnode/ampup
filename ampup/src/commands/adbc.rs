@@ -12,7 +12,7 @@ use crate::{
     adbc::Driver,
     archive,
     config::Config,
-    download_manager::verify_artifact,
+    download_manager::{download_with_retry, verify_artifact},
     github::GitHubClient,
     platform::{Architecture, Platform, PlatformError},
     token, ui,
@@ -55,7 +55,7 @@ pub async fn install(
         .resolve(&asset_name, false)?
         .expect("a required asset resolves to Some or errors");
 
-    let data = github.download_resolved_asset(&asset).await?;
+    let data = download_with_retry(&github, &asset).await?;
     verify_artifact(&asset.name, &data, asset.digest.as_deref())
         .context("driver archive failed verification")?;
 
