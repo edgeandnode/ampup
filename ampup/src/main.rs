@@ -158,6 +158,12 @@ enum Commands {
         #[command(subcommand)]
         command: SelfCommands,
     },
+
+    /// Manage optional ADBC driver components
+    Adbc {
+        #[command(subcommand)]
+        command: AdbcCommands,
+    },
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -175,6 +181,24 @@ enum SelfCommands {
 
     /// Print the version of ampup
     Version,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum AdbcCommands {
+    /// Install an ADBC driver for the active amp version
+    Install {
+        /// Driver to install (e.g. postgresql)
+        driver: String,
+    },
+
+    /// List installed ADBC drivers for the active version
+    List,
+
+    /// Uninstall an ADBC driver
+    Uninstall {
+        /// Driver to uninstall (e.g. postgresql)
+        driver: String,
+    },
 }
 
 #[tokio::main]
@@ -264,6 +288,17 @@ async fn run() -> anyhow::Result<()> {
             }
             SelfCommands::Version => {
                 println!("ampup {}", env!("VERGEN_GIT_DESCRIBE"));
+            }
+        },
+        Some(Commands::Adbc { command }) => match command {
+            AdbcCommands::Install { driver } => {
+                commands::adbc::install(&driver).await?;
+            }
+            AdbcCommands::List => {
+                commands::adbc::list()?;
+            }
+            AdbcCommands::Uninstall { driver } => {
+                commands::adbc::uninstall(&driver)?;
             }
         },
         None => {
