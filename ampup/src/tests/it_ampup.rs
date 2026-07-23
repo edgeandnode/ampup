@@ -7,6 +7,11 @@ use tempfile::TempDir;
 use super::fixtures::{MockBinary, TempInstallDir};
 use crate::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO};
 
+/// Serializes the tests that swap `PATH` to install a mock `cargo`. `PATH` is
+/// process-global, so two of them running at once restore each other's value
+/// mid-build and the mock binary disappears.
+static PATH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[tokio::test]
 async fn init_creates_directory_structure() -> Result<()> {
     let temp = TempInstallDir::new()?;
@@ -317,6 +322,7 @@ async fn build_from_local_path_with_custom_name() -> Result<()> {
     }
 
     // Temporarily modify PATH to use mock cargo
+    let _path_guard = PATH_LOCK.lock().await;
     let original_path = env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", mock_cargo_dir.path().display(), original_path);
     unsafe {
@@ -393,6 +399,7 @@ async fn rebuild_removes_stale_optional_binaries() -> Result<()> {
     write_executable(&mock_cargo, "#!/bin/sh\nexit 0")?;
 
     // Temporarily modify PATH to use mock cargo.
+    let _path_guard = PATH_LOCK.lock().await;
     let original_path = env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", mock_cargo_dir.path().display(), original_path);
     unsafe {
