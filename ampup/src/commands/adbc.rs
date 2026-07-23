@@ -19,7 +19,7 @@ use crate::{
     version_manager::VersionManager,
 };
 
-/// Install an ADBC driver for the active amp version.
+/// Install an ADBC driver for an amp version (the active one by default).
 pub async fn install(
     driver: &str,
     install_dir: Option<PathBuf>,
@@ -27,15 +27,16 @@ pub async fn install(
     github_token: Option<String>,
     arch: Option<String>,
     platform: Option<String>,
+    version: Option<String>,
 ) -> Result<()> {
     let driver = parse_driver(driver)?;
     let config = Config::new(install_dir)?;
     let github = GitHubClient::new(repo, token::resolve_github_token(github_token))?;
-    install_driver(&github, config, driver, arch, platform).await
+    install_driver(&github, config, driver, arch, platform, version).await
 }
 
-/// Fetch, verify, extract, and place `driver` for the active amp version using
-/// an already-constructed GitHub client. Split from [`install`] so tests can
+/// Fetch, verify, extract, and place `driver` for an amp version using an
+/// already-constructed GitHub client. Split from [`install`] so tests can
 /// inject a client pointed at a mock server.
 pub(crate) async fn install_driver(
     github: &GitHubClient,
@@ -43,13 +44,10 @@ pub(crate) async fn install_driver(
     driver: Driver,
     arch: Option<String>,
     platform: Option<String>,
+    version: Option<String>,
 ) -> Result<()> {
     let version_manager = VersionManager::new(config);
-
-    // Drivers are pinned to an installed amp version, so one must be active.
-    let version = version_manager
-        .get_current()?
-        .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first"))?;
+    let version = resolve_version(&version_manager, version)?;
 
     let platform = resolve_platform(platform)?;
     let arch = resolve_arch(arch)?;
@@ -130,15 +128,18 @@ fn place_driver(staging: &Path, driver_dir: &Path, lib_name: &str) -> Result<()>
     Ok(())
 }
 
-/// List installed ADBC drivers for the active amp version.
-pub fn list(install_dir: Option<PathBuf>) -> Result<()> {
+/// List installed ADBC drivers for an amp version (the active one by default).
+pub fn list(install_dir: Option<PathBuf>, version: Option<String>) -> Result<()> {
     let config = Config::new(install_dir)?;
     let version_manager = VersionManager::new(config);
 
-    let Some(version) = version_manager.get_current()? else {
+    // Without an explicit version, having none active is an empty state rather
+    // than an error.
+    if version.is_none() && version_manager.get_current()?.is_none() {
         ui::info!("No active amp version");
         return Ok(());
-    };
+    }
+    let version = resolve_version(&version_manager, version)?;
 
     let drivers = installed_drivers(&version_manager.config().drivers_dir(&version))?;
     if drivers.is_empty() {
@@ -156,16 +157,17 @@ pub fn list(install_dir: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// Uninstall an ADBC driver from the active amp version.
-pub fn uninstall(install_dir: Option<PathBuf>, driver: &str) -> Result<()> {
+/// Uninstall an ADBC driver from an amp version (the active one by default).
+pub fn uninstall(
+    install_dir: Option<PathBuf>,
+    driver: &str,
+    version: Option<String>,
+) -> Result<()> {
     let driver = parse_driver(driver)?;
 
     let config = Config::new(install_dir)?;
     let version_manager = VersionManager::new(config);
-
-    let version = version_manager
-        .get_current()?
-        .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first"))?;
+    let version = resolve_version(&version_manager, version)?;
 
     let driver_dir = version_manager
         .config()
@@ -188,6 +190,28 @@ pub fn uninstall(install_dir: Option<PathBuf>, driver: &str) -> Result<()> {
         ui::version(&version)
     );
     Ok(())
+}
+
+/// Resolve the amp version to operate on: an explicit one, or the active one.
+///
+/// The version must already be installed. Installing amp replaces the whole
+/// version directory, so drivers placed under a version whose binaries are not
+/// there yet would be destroyed by the next `ampup install`.
+fn resolve_version(version_manager: &VersionManager, version: Option<String>) -> Result<String> {
+    let version = match version {
+        Some(version) => version,
+        None => version_manager
+            .get_current()?
+            .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first"))?,
+    };
+
+    if !version_manager.is_installed(&version) {
+        bail!(
+            "amp {} is not installed; run `ampup install {version}` first",
+            ui::version(&version),
+        );
+    }
+    Ok(version)
 }
 
 /// The catalog drivers currently installed under `drivers_dir`.

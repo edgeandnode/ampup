@@ -185,7 +185,7 @@ enum SelfCommands {
 
 #[derive(Debug, clap::Subcommand)]
 enum AdbcCommands {
-    /// Install an ADBC driver for the active amp version
+    /// Install an ADBC driver for an amp version
     Install {
         /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
         #[arg(long, env = "AMP_DIR")]
@@ -209,16 +209,24 @@ enum AdbcCommands {
         /// Override platform detection (linux, darwin)
         #[arg(long)]
         platform: Option<String>,
+
+        /// Amp version to install the driver for (defaults to the active one)
+        #[arg(long = "version")]
+        amp_version: Option<String>,
     },
 
-    /// List installed ADBC drivers for the active version
+    /// List installed ADBC drivers for an amp version
     List {
         /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
         #[arg(long, env = "AMP_DIR")]
         install_dir: Option<std::path::PathBuf>,
+
+        /// Amp version to list drivers for (defaults to the active one)
+        #[arg(long = "version")]
+        amp_version: Option<String>,
     },
 
-    /// Uninstall an ADBC driver
+    /// Uninstall an ADBC driver from an amp version
     Uninstall {
         /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
         #[arg(long, env = "AMP_DIR")]
@@ -226,6 +234,10 @@ enum AdbcCommands {
 
         /// Driver to uninstall (e.g. postgresql)
         driver: String,
+
+        /// Amp version to uninstall the driver from (defaults to the active one)
+        #[arg(long = "version")]
+        amp_version: Option<String>,
     },
 }
 
@@ -326,18 +338,31 @@ async fn run() -> anyhow::Result<()> {
                 github_token,
                 arch,
                 platform,
+                amp_version,
             } => {
-                commands::adbc::install(&driver, install_dir, repo, github_token, arch, platform)
-                    .await?;
+                commands::adbc::install(
+                    &driver,
+                    install_dir,
+                    repo,
+                    github_token,
+                    arch,
+                    platform,
+                    amp_version,
+                )
+                .await?;
             }
-            AdbcCommands::List { install_dir } => {
-                commands::adbc::list(install_dir)?;
+            AdbcCommands::List {
+                install_dir,
+                amp_version,
+            } => {
+                commands::adbc::list(install_dir, amp_version)?;
             }
             AdbcCommands::Uninstall {
                 install_dir,
                 driver,
+                amp_version,
             } => {
-                commands::adbc::uninstall(install_dir, &driver)?;
+                commands::adbc::uninstall(install_dir, &driver, amp_version)?;
             }
         },
         None => {

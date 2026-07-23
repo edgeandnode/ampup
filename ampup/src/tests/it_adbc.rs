@@ -15,7 +15,10 @@ use crate::{
     commands::adbc,
     config::Config,
     github::GitHubClient,
-    tests::{fixtures::TempInstallDir, mock_github},
+    tests::{
+        fixtures::{MockBinary, TempInstallDir},
+        mock_github,
+    },
 };
 
 const LIB: &str = "libadbc_driver_postgresql.so";
@@ -45,6 +48,7 @@ async fn adbc_install_places_driver_and_manifest() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
+    MockBinary::create(&temp, version).expect("install version binaries");
 
     // The release asset the installer will fetch, plus its advertised digest.
     let tarball = make_targz(&[
@@ -75,6 +79,7 @@ async fn adbc_install_places_driver_and_manifest() {
         Driver::Postgresql,
         Some("x86_64".to_string()),
         Some("linux".to_string()),
+        None,
     )
     .await
     .expect("install should succeed");
@@ -102,6 +107,7 @@ async fn adbc_install_rejects_asset_without_digest() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
+    MockBinary::create(&temp, version).expect("install version binaries");
 
     let tarball = make_targz(&[
         (LIB, b"ELF"),
@@ -130,6 +136,7 @@ async fn adbc_install_rejects_asset_without_digest() {
         Driver::Postgresql,
         Some("x86_64".to_string()),
         Some("linux".to_string()),
+        None,
     )
     .await
     .expect_err("install should refuse an asset without a digest");
@@ -141,11 +148,43 @@ async fn adbc_install_rejects_asset_without_digest() {
     );
 }
 
+#[tokio::test]
+async fn adbc_install_refuses_a_version_that_is_not_installed() {
+    let temp = TempInstallDir::new().expect("temp install dir");
+    // v1.0.0 is active and installed; v2.0.0 has no binaries.
+    fs::write(temp.current_version_file(), "v1.0.0").expect("write active version");
+    MockBinary::create(&temp, "v1.0.0").expect("install version binaries");
+
+    // No mock server: resolving the version fails before anything is fetched.
+    let github = GitHubClient::with_api_base("http://127.0.0.1:1".to_string()).expect("client");
+    let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
+
+    let err = adbc::install_driver(
+        &github,
+        config,
+        Driver::Postgresql,
+        Some("x86_64".to_string()),
+        Some("linux".to_string()),
+        Some("v2.0.0".to_string()),
+    )
+    .await
+    .expect_err("install should refuse a version that is not installed");
+    assert!(err.to_string().contains("is not installed"), "got: {err}");
+
+    // Installing amp replaces the whole version directory, so drivers must not
+    // be placed under a version whose binaries are not there yet.
+    assert!(
+        !temp.versions_dir().join("v2.0.0").exists(),
+        "no version directory should be created for an uninstalled version",
+    );
+}
+
 #[test]
 fn adbc_uninstall_removes_installed_driver() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
+    MockBinary::create(&temp, version).expect("install version binaries");
 
     let drivers_dir = temp.versions_dir().join(version).join("drivers");
     let driver_dir = drivers_dir.join("postgresql");
@@ -153,7 +192,7 @@ fn adbc_uninstall_removes_installed_driver() {
     fs::write(driver_dir.join(LIB), b"ELF").expect("lib");
     fs::write(driver_dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
 
-    adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql")
+    adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
         .expect("uninstall should succeed");
 
     assert!(!driver_dir.exists(), "driver directory removed");
