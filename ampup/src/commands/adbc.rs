@@ -16,7 +16,7 @@ use crate::{
     github::GitHubClient,
     platform::{Architecture, Platform, PlatformError},
     token, ui,
-    version_manager::VersionManager,
+    version_manager::{VersionError, VersionManager},
 };
 
 /// Install an ADBC driver for an amp version (the active one by default).
@@ -48,6 +48,7 @@ pub(crate) async fn install_driver(
 ) -> Result<()> {
     let version_manager = VersionManager::new(config);
     let version = resolve_version(&version_manager, version)?;
+    ensure_installed(&version_manager, &version)?;
 
     let platform = resolve_platform(platform)?;
     let arch = resolve_arch(arch)?;
@@ -135,11 +136,16 @@ pub fn list(install_dir: Option<PathBuf>, version: Option<String>) -> Result<()>
 
     // Without an explicit version, having none active is an empty state rather
     // than an error.
-    if version.is_none() && version_manager.get_current()?.is_none() {
-        ui::info!("No active amp version");
-        return Ok(());
-    }
-    let version = resolve_version(&version_manager, version)?;
+    let version = match version {
+        Some(version) => version,
+        None => match version_manager.get_current()? {
+            Some(version) => version,
+            None => {
+                ui::info!("No active amp version");
+                return Ok(());
+            }
+        },
+    };
 
     let drivers = installed_drivers(&version_manager.config().drivers_dir(&version))?;
     if drivers.is_empty() {
@@ -193,25 +199,33 @@ pub fn uninstall(
 }
 
 /// Resolve the amp version to operate on: an explicit one, or the active one.
-///
-/// The version must already be installed. Installing amp replaces the whole
-/// version directory, so drivers placed under a version whose binaries are not
-/// there yet would be destroyed by the next `ampup install`.
 fn resolve_version(version_manager: &VersionManager, version: Option<String>) -> Result<String> {
-    let version = match version {
-        Some(version) => version,
+    match version {
+        Some(version) => Ok(version),
         None => version_manager
             .get_current()?
-            .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first"))?,
-    };
-
-    if !version_manager.is_installed(&version) {
-        bail!(
-            "amp {} is not installed; run `ampup install {version}` first",
-            ui::version(&version),
-        );
+            .ok_or_else(|| anyhow!("no active amp version; run `ampup install` first")),
     }
-    Ok(version)
+}
+
+/// Require `version`'s binaries before placing drivers under it.
+///
+/// `ampup install <v>` skips all work when `<v>`'s binaries are already there;
+/// otherwise it replaces the whole version directory, taking any `drivers/`
+/// subdirectory with it. Installing only into versions that are past that
+/// short-circuit keeps drivers from being destroyed by a later install.
+///
+/// Only installation is gated: listing and uninstalling must still work on a
+/// version whose binaries have gone missing, or an orphaned driver directory
+/// could never be inspected or removed.
+fn ensure_installed(version_manager: &VersionManager, version: &str) -> Result<()> {
+    if !version_manager.is_installed(version) {
+        return Err(VersionError::NotInstalled {
+            version: version.to_string(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 /// The catalog drivers currently installed under `drivers_dir`.

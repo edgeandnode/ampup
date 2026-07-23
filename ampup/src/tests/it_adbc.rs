@@ -169,7 +169,7 @@ async fn adbc_install_refuses_a_version_that_is_not_installed() {
     )
     .await
     .expect_err("install should refuse a version that is not installed");
-    assert!(err.to_string().contains("is not installed"), "got: {err}");
+    assert!(err.to_string().contains("not installed"), "got: {err}");
 
     // Installing amp replaces the whole version directory, so drivers must not
     // be placed under a version whose binaries are not there yet.
@@ -177,6 +177,85 @@ async fn adbc_install_refuses_a_version_that_is_not_installed() {
         !temp.versions_dir().join("v2.0.0").exists(),
         "no version directory should be created for an uninstalled version",
     );
+}
+
+#[tokio::test]
+async fn adbc_install_targets_an_explicit_version() {
+    let temp = TempInstallDir::new().expect("temp install dir");
+    // Active version differs from the one being targeted.
+    fs::write(temp.current_version_file(), "v1.0.0").expect("write active version");
+    MockBinary::create(&temp, "v1.0.0").expect("install active version binaries");
+    let target = "v2.0.0";
+    MockBinary::create(&temp, target).expect("install target version binaries");
+
+    let tarball = make_targz(&[
+        (LIB, b"ELF"),
+        ("LICENSE.txt", b"license"),
+        ("NOTICE.txt", b"notice"),
+    ]);
+    let digest = format!("sha256:{:x}", Sha256::digest(&tarball));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock server");
+    let addr = listener.local_addr().expect("mock server address");
+    let release = mock_github::release_json(addr, target, &[(ASSET, Some(&digest))]);
+    let routes = vec![
+        mock_github::Route::ok(format!("tags/{target}"), release),
+        mock_github::Route::ok("download/", tarball),
+    ];
+    let _server = mock_github::start(listener, routes);
+
+    let github = GitHubClient::with_api_base(format!("http://{addr}")).expect("mock client");
+    let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
+
+    adbc::install_driver(
+        &github,
+        config,
+        Driver::Postgresql,
+        Some("x86_64".to_string()),
+        Some("linux".to_string()),
+        Some(target.to_string()),
+    )
+    .await
+    .expect("install should succeed for an explicit version");
+
+    // The driver lands under the requested version, not the active one.
+    assert!(
+        temp.versions_dir()
+            .join(target)
+            .join("drivers")
+            .join("postgresql")
+            .join("manifest.toml")
+            .exists(),
+        "driver installed under the requested version",
+    );
+    assert!(
+        !temp.versions_dir().join("v1.0.0").join("drivers").exists(),
+        "the active version should be untouched",
+    );
+}
+
+#[test]
+fn adbc_uninstall_works_for_a_version_without_binaries() {
+    let temp = TempInstallDir::new().expect("temp install dir");
+    let version = "v1.0.0";
+    fs::write(temp.current_version_file(), version).expect("write active version");
+
+    // An orphaned driver directory: binaries are gone, drivers remain. Cleanup
+    // must still work, otherwise it could never be removed with ampup.
+    let driver_dir = temp
+        .versions_dir()
+        .join(version)
+        .join("drivers")
+        .join("postgresql");
+    fs::create_dir_all(&driver_dir).expect("driver dir");
+    fs::write(driver_dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
+
+    adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
+        .expect("uninstall should work without the version's binaries");
+
+    assert!(!driver_dir.exists(), "orphaned driver directory removed");
 }
 
 #[test]

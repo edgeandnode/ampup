@@ -211,7 +211,7 @@ enum AdbcCommands {
         platform: Option<String>,
 
         /// Amp version to install the driver for (defaults to the active one)
-        #[arg(long = "version")]
+        #[arg(long = "version", value_name = "VERSION")]
         amp_version: Option<String>,
     },
 
@@ -222,7 +222,7 @@ enum AdbcCommands {
         install_dir: Option<std::path::PathBuf>,
 
         /// Amp version to list drivers for (defaults to the active one)
-        #[arg(long = "version")]
+        #[arg(long = "version", value_name = "VERSION")]
         amp_version: Option<String>,
     },
 
@@ -236,7 +236,7 @@ enum AdbcCommands {
         driver: String,
 
         /// Amp version to uninstall the driver from (defaults to the active one)
-        #[arg(long = "version")]
+        #[arg(long = "version", value_name = "VERSION")]
         amp_version: Option<String>,
     },
 }
