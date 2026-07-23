@@ -78,55 +78,71 @@ pub(crate) async fn install_driver(
     verify_artifact(&asset.name, &data, Some(digest))
         .context("driver archive failed verification")?;
 
-    // Stage inside the drivers directory so the final rename stays on one
-    // filesystem (atomic, no cross-device copy).
-    let drivers_dir = version_manager.config().drivers_dir(&version);
-    fs::create_dir_all(&drivers_dir).context("failed to create drivers directory")?;
+    // Stage inside the version directory so the final renames stay on one
+    // filesystem. TempDir cleans this up if anything below fails.
+    let version_dir = version_manager.config().version_dir(&version);
     let staging =
-        tempfile::tempdir_in(&drivers_dir).context("failed to create staging directory")?;
+        tempfile::tempdir_in(&version_dir).context("failed to create staging directory")?;
 
-    let lib = driver.runtime_lib_filename(platform);
+    let archive_lib = driver.archive_lib_filename(platform);
     archive::extract_and_validate(
         &data,
         staging.path(),
-        &[lib.as_str(), "LICENSE.txt", "NOTICE.txt"],
+        &[archive_lib.as_str(), "LICENSE.txt", "NOTICE.txt"],
     )?;
 
-    // Absolute so the manifest's `Driver.shared` resolves regardless of
-    // ampd's working directory.
-    let driver_dir = std::path::absolute(
-        version_manager
-            .config()
-            .driver_dir(&version, driver.as_str()),
-    )
-    .context("failed to resolve driver directory")?;
-    place_driver(staging.path(), &driver_dir, &lib)?;
-    // The staged files now live at `driver_dir`; disarm TempDir cleanup.
-    let _ = staging.keep();
+    let installed_lib = place_driver(staging.path(), &version_dir, driver, platform)?;
 
     ui::info!(
         "Installed {} driver for amp {} at {}",
         driver,
         ui::version(&version),
-        driver_dir.display(),
+        installed_lib.display(),
     );
     Ok(())
 }
 
-/// Assemble the self-contained driver directory: write the manifest into the
-/// staged files (pointing `Driver.shared` at the final library path), then
-/// atomically move the staged directory into `driver_dir`, replacing any
-/// existing install.
-fn place_driver(staging: &Path, driver_dir: &Path, lib_name: &str) -> Result<()> {
-    let manifest = crate::adbc::driver_manifest(&driver_dir.join(lib_name));
-    fs::write(staging.join("manifest.toml"), manifest)
-        .context("failed to write ADBC driver manifest")?;
+/// Move the extracted files from `staging` into `version_dir`, renaming the
+/// library to its installed (prefixed) name and namespacing the license
+/// sidecars alongside it. Returns the installed library path.
+///
+/// Each move is a rename within one filesystem, which replaces any existing
+/// file of that name — so a reinstall overwrites in place. Renaming over a
+/// library `ampd` currently has loaded is safe: the open inode survives.
+///
+/// A failed move rolls back the ones that already landed. Without that, a
+/// partial install would leave the library behind and `list` would report a
+/// driver whose installation reported an error.
+fn place_driver(
+    staging: &Path,
+    version_dir: &Path,
+    driver: Driver,
+    platform: Platform,
+) -> Result<PathBuf> {
+    let stem = driver.installed_stem();
+    let moves = [
+        (
+            driver.archive_lib_filename(platform),
+            driver.installed_lib_filename(platform),
+        ),
+        ("LICENSE.txt".to_string(), format!("{stem}.LICENSE.txt")),
+        ("NOTICE.txt".to_string(), format!("{stem}.NOTICE.txt")),
+    ];
 
-    if driver_dir.exists() {
-        fs::remove_dir_all(driver_dir).context("failed to remove the existing driver directory")?;
+    let mut placed: Vec<PathBuf> = Vec::with_capacity(moves.len());
+    for (from, to) in &moves {
+        let destination = version_dir.join(to);
+        if let Err(error) = fs::rename(staging.join(from), &destination) {
+            for path in &placed {
+                let _ = fs::remove_file(path);
+            }
+            return Err(anyhow::Error::new(error))
+                .with_context(|| format!("failed to move {from} into place"));
+        }
+        placed.push(destination);
     }
-    fs::rename(staging, driver_dir).context("failed to move the driver into place")?;
-    Ok(())
+
+    Ok(version_dir.join(driver.installed_lib_filename(platform)))
 }
 
 /// List installed ADBC drivers for an amp version (the active one by default).
@@ -147,7 +163,7 @@ pub fn list(install_dir: Option<PathBuf>, version: Option<String>) -> Result<()>
         },
     };
 
-    let drivers = installed_drivers(&version_manager.config().drivers_dir(&version))?;
+    let drivers = installed_drivers(&version_manager.config().version_dir(&version));
     if drivers.is_empty() {
         ui::info!(
             "No ADBC drivers installed for amp {}",
@@ -175,20 +191,26 @@ pub fn uninstall(
     let version_manager = VersionManager::new(config);
     let version = resolve_version(&version_manager, version)?;
 
-    let driver_dir = version_manager
-        .config()
-        .driver_dir(&version, driver.as_str());
-    if !driver_dir.exists() {
+    let version_dir = version_manager.config().version_dir(&version);
+    let installed = installed_lib_paths(&version_dir, driver);
+    if installed.is_empty() {
         bail!(
             "the {driver} driver is not installed for amp {}",
             ui::version(&version)
         );
     }
 
-    fs::remove_dir_all(&driver_dir).context("failed to remove the driver directory")?;
-    // Tidy up an otherwise-empty drivers directory; ignore the error when it
-    // still holds other drivers (or a leftover staging dir).
-    let _ = fs::remove_dir(version_manager.config().drivers_dir(&version));
+    // The library plus its license sidecars all share the driver's stem.
+    let stem = driver.installed_stem();
+    for name in [format!("{stem}.LICENSE.txt"), format!("{stem}.NOTICE.txt")] {
+        let sidecar = version_dir.join(name);
+        if sidecar.exists() {
+            fs::remove_file(&sidecar).context("failed to remove a driver license file")?;
+        }
+    }
+    for lib in installed {
+        fs::remove_file(&lib).context("failed to remove the driver library")?;
+    }
 
     ui::info!(
         "Uninstalled {} driver from amp {}",
@@ -211,13 +233,13 @@ fn resolve_version(version_manager: &VersionManager, version: Option<String>) ->
 /// Require `version`'s binaries before placing drivers under it.
 ///
 /// `ampup install <v>` skips all work when `<v>`'s binaries are already there;
-/// otherwise it replaces the whole version directory, taking any `drivers/`
-/// subdirectory with it. Installing only into versions that are past that
+/// otherwise it replaces the whole version directory, taking any drivers
+/// installed into it. Installing only into versions that are past that
 /// short-circuit keeps drivers from being destroyed by a later install.
 ///
 /// Only installation is gated: listing and uninstalling must still work on a
-/// version whose binaries have gone missing, or an orphaned driver directory
-/// could never be inspected or removed.
+/// version whose binaries have gone missing, or an orphaned driver could never
+/// be inspected or removed.
 fn ensure_installed(version_manager: &VersionManager, version: &str) -> Result<()> {
     if !version_manager.is_installed(version) {
         return Err(VersionError::NotInstalled {
@@ -228,36 +250,34 @@ fn ensure_installed(version_manager: &VersionManager, version: &str) -> Result<(
     Ok(())
 }
 
-/// The catalog drivers currently installed under `drivers_dir`.
+/// The installed library paths for `driver` in `version_dir`, across every
+/// supported platform.
 ///
-/// Only complete installs count: an entry must be a directory named after a
-/// known driver and hold a `manifest.toml`, which skips leftover staging
-/// directories and partial installs. Returns empty when `drivers_dir` is
-/// absent (a version with no drivers installed).
-fn installed_drivers(drivers_dir: &Path) -> Result<Vec<Driver>> {
-    if !drivers_dir.exists() {
-        return Ok(Vec::new());
-    }
+/// Platform-agnostic on purpose: `adbc install --platform` can place a library
+/// for a platform other than this host's, and list/uninstall must still see it
+/// rather than stranding a file no ampup command can remove.
+fn installed_lib_paths(version_dir: &Path, driver: Driver) -> Vec<PathBuf> {
+    Platform::ALL
+        .iter()
+        .map(|platform| version_dir.join(driver.installed_lib_filename(*platform)))
+        .filter(|path| path.is_file())
+        .collect()
+}
 
-    let mut drivers = Vec::new();
-    for entry in fs::read_dir(drivers_dir).context("failed to read the drivers directory")? {
-        let entry = entry.context("failed to read a drivers directory entry")?;
-        if !entry
-            .file_type()
-            .context("failed to determine a drivers entry type")?
-            .is_dir()
-        {
-            continue;
-        }
-        let Some(driver) = entry.file_name().to_str().and_then(Driver::from_name) else {
-            continue;
-        };
-        if entry.path().join("manifest.toml").is_file() {
-            drivers.push(driver);
-        }
-    }
+/// The catalog drivers currently installed in `version_dir`.
+///
+/// The directory also holds the amp binaries and each driver's license
+/// sidecars, so membership is decided by looking up the catalog's expected
+/// filenames rather than by matching names found there. A missing directory
+/// yields no drivers, since the per-file checks simply do not match.
+fn installed_drivers(version_dir: &Path) -> Vec<Driver> {
+    let mut drivers: Vec<Driver> = Driver::ALL
+        .iter()
+        .copied()
+        .filter(|driver| !installed_lib_paths(version_dir, *driver).is_empty())
+        .collect();
     drivers.sort_by_key(|d| d.as_str());
-    Ok(drivers)
+    drivers
 }
 
 /// Resolve a driver name against the catalog, with a helpful error listing the
@@ -301,96 +321,187 @@ fn resolve_arch(over: Option<String>) -> Result<Architecture> {
 mod tests {
     use super::*;
 
-    const LIB: &str = "libadbc_driver_postgresql.so";
+    const ARCHIVE_LIB: &str = "libadbc_driver_postgresql.so";
+    const INSTALLED_LIB: &str = "amp-adbc-driver-postgresql.so";
 
-    /// Build a staging directory holding the three extracted driver files,
-    /// with `lib_contents` as the library body.
+    /// A staging directory holding the three files a driver archive carries.
     fn staged_driver(parent: &Path, lib_contents: &[u8]) -> PathBuf {
         let staging = tempfile::tempdir_in(parent).expect("staging dir");
-        fs::write(staging.path().join(LIB), lib_contents).expect("write lib");
+        fs::write(staging.path().join(ARCHIVE_LIB), lib_contents).expect("write lib");
         fs::write(staging.path().join("LICENSE.txt"), b"license").expect("write license");
         fs::write(staging.path().join("NOTICE.txt"), b"notice").expect("write notice");
         staging.keep()
     }
 
+    /// A version directory containing the amp binaries, as a real install has.
+    fn version_dir_with_binaries() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("version dir");
+        for binary in ["ampd", "ampctl", "ampsql"] {
+            fs::write(dir.path().join(binary), b"#!/bin/sh\n").expect("write binary");
+        }
+        dir
+    }
+
     #[test]
-    fn place_driver_writes_files_and_manifest() {
-        let root = tempfile::tempdir().expect("root");
-        let drivers_dir = root.path().join("drivers");
-        fs::create_dir_all(&drivers_dir).expect("drivers dir");
-        let staging = staged_driver(&drivers_dir, b"ELF");
-        let driver_dir = drivers_dir.join("postgresql");
+    fn place_driver_renames_the_library_and_namespaces_the_sidecars() {
+        let version_dir = version_dir_with_binaries();
+        let staging = staged_driver(version_dir.path(), b"ELF");
 
-        place_driver(&staging, &driver_dir, LIB).expect("place");
+        let placed = place_driver(
+            &staging,
+            version_dir.path(),
+            Driver::Postgresql,
+            Platform::Linux,
+        )
+        .expect("place");
 
-        assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"ELF");
-        assert!(driver_dir.join("LICENSE.txt").exists());
-        assert!(driver_dir.join("NOTICE.txt").exists());
-
-        let manifest =
-            fs::read_to_string(driver_dir.join("manifest.toml")).expect("manifest exists");
-        let parsed: toml::Value = toml::from_str(&manifest).expect("valid TOML");
-        assert_eq!(
-            parsed["Driver"]["shared"].as_str(),
-            Some(driver_dir.join(LIB).to_string_lossy().as_ref()),
+        assert_eq!(placed, version_dir.path().join(INSTALLED_LIB));
+        assert_eq!(fs::read(&placed).expect("lib"), b"ELF");
+        assert!(
+            version_dir
+                .path()
+                .join("amp-adbc-driver-postgresql.LICENSE.txt")
+                .exists(),
+            "license is namespaced so a second driver cannot clobber it",
         );
-    }
-
-    #[test]
-    fn place_driver_replaces_an_existing_install() {
-        let root = tempfile::tempdir().expect("root");
-        let drivers_dir = root.path().join("drivers");
-        fs::create_dir_all(&drivers_dir).expect("drivers dir");
-        let driver_dir = drivers_dir.join("postgresql");
-
-        place_driver(&staged_driver(&drivers_dir, b"old"), &driver_dir, LIB).expect("first");
-        // A stray file from the old install must not survive the reinstall.
-        fs::write(driver_dir.join("stale.txt"), b"x").expect("stray file");
-
-        place_driver(&staged_driver(&drivers_dir, b"new"), &driver_dir, LIB).expect("second");
-
-        assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"new");
-        assert!(!driver_dir.join("stale.txt").exists());
-    }
-
-    /// Create `drivers_dir/<name>/`, optionally with a `manifest.toml`.
-    fn make_driver_dir(drivers_dir: &Path, name: &str, with_manifest: bool) {
-        let dir = drivers_dir.join(name);
-        fs::create_dir_all(&dir).expect("driver dir");
-        if with_manifest {
-            fs::write(dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
+        assert!(
+            version_dir
+                .path()
+                .join("amp-adbc-driver-postgresql.NOTICE.txt")
+                .exists()
+        );
+        // The upstream name must not survive alongside the renamed library.
+        assert!(!version_dir.path().join(ARCHIVE_LIB).exists());
+        // The amp binaries are untouched.
+        for binary in ["ampd", "ampctl", "ampsql"] {
+            assert!(version_dir.path().join(binary).exists(), "{binary} intact");
         }
     }
 
     #[test]
-    fn installed_drivers_lists_only_complete_catalog_dirs() {
-        let root = tempfile::tempdir().expect("root");
-        let drivers_dir = root.path().join("drivers");
-        make_driver_dir(&drivers_dir, "postgresql", true); // complete -> included
-        make_driver_dir(&drivers_dir, "mysql", true); // not in catalog -> excluded
-        make_driver_dir(&drivers_dir, ".tmpABC123", true); // leftover staging -> excluded
-        fs::write(drivers_dir.join("stray.txt"), b"x").expect("stray file"); // non-dir -> excluded
+    fn place_driver_overwrites_a_previous_install() {
+        let version_dir = version_dir_with_binaries();
+
+        let first = staged_driver(version_dir.path(), b"old");
+        place_driver(
+            &first,
+            version_dir.path(),
+            Driver::Postgresql,
+            Platform::Linux,
+        )
+        .expect("first");
+
+        let second = staged_driver(version_dir.path(), b"new");
+        place_driver(
+            &second,
+            version_dir.path(),
+            Driver::Postgresql,
+            Platform::Linux,
+        )
+        .expect("second");
 
         assert_eq!(
-            installed_drivers(&drivers_dir).expect("list"),
+            fs::read(version_dir.path().join(INSTALLED_LIB)).expect("lib"),
+            b"new",
+        );
+    }
+
+    #[test]
+    fn installed_drivers_ignores_the_amp_binaries_and_sidecars() {
+        let version_dir = version_dir_with_binaries();
+        assert!(
+            installed_drivers(version_dir.path()).is_empty(),
+            "the amp binaries are not drivers",
+        );
+
+        // A license sidecar alone must not register as an installed driver.
+        fs::write(
+            version_dir
+                .path()
+                .join("amp-adbc-driver-postgresql.LICENSE.txt"),
+            b"license",
+        )
+        .expect("sidecar");
+        assert!(
+            installed_drivers(version_dir.path()).is_empty(),
+            "a sidecar without the library is not an install",
+        );
+
+        fs::write(version_dir.path().join(INSTALLED_LIB), b"ELF").expect("lib");
+        assert_eq!(
+            installed_drivers(version_dir.path()),
+            vec![Driver::Postgresql],
+        );
+    }
+
+    /// The library name for a platform that is not this host's, so the test
+    /// exercises the cross-platform path wherever it runs.
+    fn foreign_platform_lib(driver: Driver) -> String {
+        let host = Platform::detect().expect("supported host platform");
+        let foreign = Platform::ALL
+            .iter()
+            .copied()
+            .find(|platform| *platform != host)
+            .expect("another supported platform exists");
+        driver.installed_lib_filename(foreign)
+    }
+
+    #[test]
+    fn installed_drivers_finds_a_library_built_for_another_platform() {
+        // `adbc install --platform <other>` leaves a library this host would
+        // not look for. list and uninstall must still see it, or the file
+        // could never be removed.
+        let version_dir = version_dir_with_binaries();
+        fs::write(
+            version_dir
+                .path()
+                .join(foreign_platform_lib(Driver::Postgresql)),
+            b"FOREIGN",
+        )
+        .expect("lib");
+
+        assert_eq!(
+            installed_drivers(version_dir.path()),
             vec![Driver::Postgresql],
         );
     }
 
     #[test]
-    fn installed_drivers_skips_partial_installs() {
+    fn installed_drivers_on_missing_dir_is_empty() {
         let root = tempfile::tempdir().expect("root");
-        let drivers_dir = root.path().join("drivers");
-        make_driver_dir(&drivers_dir, "postgresql", false); // no manifest -> excluded
+        let missing = root.path().join("nope");
 
-        assert!(installed_drivers(&drivers_dir).expect("list").is_empty());
+        assert!(installed_drivers(&missing).is_empty());
     }
 
     #[test]
-    fn installed_drivers_on_missing_dir_is_empty() {
-        let root = tempfile::tempdir().expect("root");
-        let drivers_dir = root.path().join("drivers"); // never created
+    fn place_driver_rolls_back_when_a_later_move_fails() {
+        let version_dir = version_dir_with_binaries();
+        let staging = staged_driver(version_dir.path(), b"ELF");
+        // A directory where a sidecar must land makes that rename fail, after
+        // the library has already been moved.
+        fs::create_dir(
+            version_dir
+                .path()
+                .join("amp-adbc-driver-postgresql.LICENSE.txt"),
+        )
+        .expect("blocking directory");
 
-        assert!(installed_drivers(&drivers_dir).expect("list").is_empty());
+        let result = place_driver(
+            &staging,
+            version_dir.path(),
+            Driver::Postgresql,
+            Platform::Linux,
+        );
+
+        assert!(result.is_err(), "a blocked sidecar move fails the install");
+        assert!(
+            !version_dir.path().join(INSTALLED_LIB).exists(),
+            "the library is rolled back, so list cannot report a failed install",
+        );
+        assert!(
+            installed_drivers(version_dir.path()).is_empty(),
+            "no driver is reported after a failed install",
+        );
     }
 }

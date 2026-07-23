@@ -75,7 +75,7 @@ impl Config {
 
     /// Get the binary path for a specific version
     pub fn version_binary_path(&self, version: &str) -> PathBuf {
-        self.versions_dir.join(version).join("ampd")
+        self.version_dir(version).join("ampd")
     }
 
     /// Get the active ampd binary symlink path
@@ -85,7 +85,7 @@ impl Config {
 
     /// Get the ampctl binary path for a specific version
     pub fn version_ampctl_path(&self, version: &str) -> PathBuf {
-        self.versions_dir.join(version).join("ampctl")
+        self.version_dir(version).join("ampctl")
     }
 
     /// Get the active ampctl binary symlink path
@@ -95,19 +95,14 @@ impl Config {
 
     /// Get the ampsql binary path for a specific version
     pub fn version_ampsql_path(&self, version: &str) -> PathBuf {
-        self.versions_dir.join(version).join("ampsql")
+        self.version_dir(version).join("ampsql")
     }
 
-    /// Get the ADBC drivers directory for a specific version
-    /// (~/.amp/versions/<version>/drivers)
-    pub fn drivers_dir(&self, version: &str) -> PathBuf {
-        self.versions_dir.join(version).join("drivers")
-    }
-
-    /// Get the self-contained directory for a single ADBC driver under a
-    /// version (~/.amp/versions/<version>/drivers/<driver>)
-    pub fn driver_dir(&self, version: &str, driver: &str) -> PathBuf {
-        self.drivers_dir(version).join(driver)
+    /// Get the directory holding a version's installed files
+    /// (~/.amp/versions/<version>): the amp binaries and any ADBC drivers
+    /// installed alongside them.
+    pub fn version_dir(&self, version: &str) -> PathBuf {
+        self.versions_dir.join(version)
     }
 
     /// Get the active ampsql binary symlink path

@@ -46,6 +46,12 @@ pub enum Platform {
 }
 
 impl Platform {
+    /// Every supported platform.
+    ///
+    /// Lets callers cover a version directory that may have been populated for
+    /// a platform other than this one (`ampup adbc install --platform`).
+    pub const ALL: &'static [Platform] = &[Platform::Linux, Platform::Darwin];
+
     /// Detect the current platform
     pub fn detect() -> Result<Self> {
         match std::env::consts::OS {

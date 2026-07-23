@@ -1,9 +1,10 @@
 //! Integration tests for the `ampup adbc` commands (#2600).
 //!
-//! `adbc_install_places_driver_and_manifest` drives the whole install path
-//! (fetch release metadata -> download -> verify digest -> extract -> place +
-//! manifest) against an in-process mock GitHub server, so no network is
-//! required. The uninstall test exercises the command against a placed driver.
+//! `adbc_install_places_driver_in_the_version_dir` drives the whole install
+//! path (fetch release metadata -> download -> verify digest -> extract ->
+//! rename into the version directory) against an in-process mock GitHub
+//! server, so no network is required. The uninstall tests exercise the command
+//! against a placed driver.
 
 use flate2::{Compression, write::GzEncoder};
 use fs_err as fs;
@@ -11,7 +12,7 @@ use sha2::{Digest, Sha256};
 use tar::{Builder, Header};
 
 use crate::{
-    adbc::Driver,
+    adbc::{DRIVER_FILE_PREFIX, Driver},
     commands::adbc,
     config::Config,
     github::GitHubClient,
@@ -21,7 +22,10 @@ use crate::{
     },
 };
 
-const LIB: &str = "libadbc_driver_postgresql.so";
+/// The library name inside the release archive (upstream's).
+const ARCHIVE_LIB: &str = "libadbc_driver_postgresql.so";
+/// The name it is installed under.
+const INSTALLED_LIB: &str = "amp-adbc-driver-postgresql.so";
 const ASSET: &str = "adbc-driver-postgresql-linux-x86_64.tar.gz";
 
 /// Build a gzip-compressed tar of `(name, contents)` entries.
@@ -43,19 +47,40 @@ fn make_targz(files: &[(&str, &[u8])]) -> Vec<u8> {
         .expect("should finish gzip")
 }
 
+/// The driver archive as the release ships it.
+fn driver_tarball() -> Vec<u8> {
+    make_targz(&[
+        (ARCHIVE_LIB, b"ELF"),
+        ("LICENSE.txt", b"license"),
+        ("NOTICE.txt", b"notice"),
+    ])
+}
+
+/// Names of any driver-owned or leftover staging entries in `version_dir`,
+/// ignoring the amp binaries that share it.
+///
+/// What "no driver installed" means now that drivers are files among others.
+fn driver_artifacts(version_dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(version_dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with(DRIVER_FILE_PREFIX) || name.starts_with(".tmp"))
+        .collect();
+    found.sort();
+    found
+}
+
 #[tokio::test]
-async fn adbc_install_places_driver_and_manifest() {
+async fn adbc_install_places_driver_in_the_version_dir() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
     MockBinary::create(&temp, version).expect("install version binaries");
 
-    // The release asset the installer will fetch, plus its advertised digest.
-    let tarball = make_targz(&[
-        (LIB, b"ELF"),
-        ("LICENSE.txt", b"license"),
-        ("NOTICE.txt", b"notice"),
-    ]);
+    let tarball = driver_tarball();
     let digest = format!("sha256:{:x}", Sha256::digest(&tarball));
 
     // Mock GitHub: release metadata for the tag, plus the asset download.
@@ -84,21 +109,40 @@ async fn adbc_install_places_driver_and_manifest() {
     .await
     .expect("install should succeed");
 
-    let driver_dir = temp
-        .versions_dir()
-        .join(version)
-        .join("drivers")
-        .join("postgresql");
-    assert_eq!(fs::read(driver_dir.join(LIB)).expect("lib"), b"ELF");
-    assert!(driver_dir.join("LICENSE.txt").exists(), "LICENSE placed");
-    assert!(driver_dir.join("NOTICE.txt").exists(), "NOTICE placed");
-
-    let manifest = fs::read_to_string(driver_dir.join("manifest.toml")).expect("manifest exists");
-    let parsed: toml::Value = toml::from_str(&manifest).expect("manifest is valid TOML");
+    // The library lands beside the amp binaries, under its installed name.
+    let version_dir = temp.version_dir(version);
     assert_eq!(
-        parsed["Driver"]["shared"].as_str(),
-        Some(driver_dir.join(LIB).to_string_lossy().as_ref()),
-        "Driver.shared points at the placed library",
+        fs::read(version_dir.join(INSTALLED_LIB)).expect("lib"),
+        b"ELF",
+    );
+    assert!(
+        !version_dir.join(ARCHIVE_LIB).exists(),
+        "the upstream name must not survive alongside the renamed library",
+    );
+    assert!(
+        version_dir
+            .join("amp-adbc-driver-postgresql.LICENSE.txt")
+            .exists(),
+        "license sidecar is namespaced",
+    );
+    assert!(
+        version_dir
+            .join("amp-adbc-driver-postgresql.NOTICE.txt")
+            .exists(),
+    );
+
+    // The amp binaries it now shares a directory with are untouched.
+    for binary in ["ampd", "ampctl", "ampsql"] {
+        assert!(version_dir.join(binary).exists(), "{binary} intact");
+    }
+
+    // No staging directory is left behind.
+    assert!(
+        !driver_artifacts(&version_dir)
+            .iter()
+            .any(|name| name.starts_with(".tmp")),
+        "staging directory cleaned up: {:?}",
+        driver_artifacts(&version_dir),
     );
 }
 
@@ -109,12 +153,6 @@ async fn adbc_install_rejects_asset_without_digest() {
     fs::write(temp.current_version_file(), version).expect("write active version");
     MockBinary::create(&temp, version).expect("install version binaries");
 
-    let tarball = make_targz(&[
-        (LIB, b"ELF"),
-        ("LICENSE.txt", b"license"),
-        ("NOTICE.txt", b"notice"),
-    ]);
-
     // Same release, except the asset advertises no digest.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -123,7 +161,7 @@ async fn adbc_install_rejects_asset_without_digest() {
     let release = mock_github::release_json(addr, version, &[(ASSET, None)]);
     let routes = vec![
         mock_github::Route::ok(format!("tags/{version}"), release),
-        mock_github::Route::ok("download/", tarball),
+        mock_github::Route::ok("download/", driver_tarball()),
     ];
     let _server = mock_github::start(listener, routes);
 
@@ -143,8 +181,8 @@ async fn adbc_install_rejects_asset_without_digest() {
     assert!(err.to_string().contains("no digest"), "got: {err}");
 
     assert!(
-        !temp.versions_dir().join(version).join("drivers").exists(),
-        "nothing should be installed when the digest is missing",
+        driver_artifacts(&temp.version_dir(version)).is_empty(),
+        "nothing installed and no staging left behind when the digest is missing",
     );
 }
 
@@ -188,11 +226,7 @@ async fn adbc_install_targets_an_explicit_version() {
     let target = "v2.0.0";
     MockBinary::create(&temp, target).expect("install target version binaries");
 
-    let tarball = make_targz(&[
-        (LIB, b"ELF"),
-        ("LICENSE.txt", b"license"),
-        ("NOTICE.txt", b"notice"),
-    ]);
+    let tarball = driver_tarball();
     let digest = format!("sha256:{:x}", Sha256::digest(&tarball));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -220,20 +254,47 @@ async fn adbc_install_targets_an_explicit_version() {
     .await
     .expect("install should succeed for an explicit version");
 
-    // The driver lands under the requested version, not the active one.
     assert!(
-        temp.versions_dir()
-            .join(target)
-            .join("drivers")
-            .join("postgresql")
-            .join("manifest.toml")
-            .exists(),
+        temp.version_dir(target).join(INSTALLED_LIB).exists(),
         "driver installed under the requested version",
     );
     assert!(
-        !temp.versions_dir().join("v1.0.0").join("drivers").exists(),
-        "the active version should be untouched",
+        driver_artifacts(&temp.version_dir("v1.0.0")).is_empty(),
+        "the active version holds no driver files",
     );
+}
+
+#[test]
+fn adbc_uninstall_removes_the_library_and_its_sidecars() {
+    let temp = TempInstallDir::new().expect("temp install dir");
+    let version = "v1.0.0";
+    fs::write(temp.current_version_file(), version).expect("write active version");
+    MockBinary::create(&temp, version).expect("install version binaries");
+
+    let version_dir = temp.version_dir(version);
+    fs::write(version_dir.join(INSTALLED_LIB), b"ELF").expect("lib");
+    fs::write(
+        version_dir.join("amp-adbc-driver-postgresql.LICENSE.txt"),
+        b"license",
+    )
+    .expect("license");
+    fs::write(
+        version_dir.join("amp-adbc-driver-postgresql.NOTICE.txt"),
+        b"notice",
+    )
+    .expect("notice");
+
+    adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
+        .expect("uninstall should succeed");
+
+    assert!(
+        driver_artifacts(&version_dir).is_empty(),
+        "library and sidecars all removed",
+    );
+    // Uninstalling a driver must not disturb the amp binaries it sat beside.
+    for binary in ["ampd", "ampctl", "ampsql"] {
+        assert!(version_dir.join(binary).exists(), "{binary} intact");
+    }
 }
 
 #[test]
@@ -242,41 +303,39 @@ fn adbc_uninstall_works_for_a_version_without_binaries() {
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
 
-    // An orphaned driver directory: binaries are gone, drivers remain. Cleanup
-    // must still work, otherwise it could never be removed with ampup.
-    let driver_dir = temp
-        .versions_dir()
-        .join(version)
-        .join("drivers")
-        .join("postgresql");
-    fs::create_dir_all(&driver_dir).expect("driver dir");
-    fs::write(driver_dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
+    // An orphaned driver: binaries are gone, the library remains. Cleanup must
+    // still work, otherwise it could never be removed with ampup.
+    let version_dir = temp.version_dir(version);
+    fs::create_dir_all(&version_dir).expect("version dir");
+    fs::write(version_dir.join(INSTALLED_LIB), b"ELF").expect("lib");
 
     adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
         .expect("uninstall should work without the version's binaries");
 
-    assert!(!driver_dir.exists(), "orphaned driver directory removed");
+    assert!(!version_dir.join(INSTALLED_LIB).exists(), "library removed");
 }
 
 #[test]
-fn adbc_uninstall_removes_installed_driver() {
+fn adbc_uninstall_removes_a_library_built_for_another_platform() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
     MockBinary::create(&temp, version).expect("install version binaries");
 
-    let drivers_dir = temp.versions_dir().join(version).join("drivers");
-    let driver_dir = drivers_dir.join("postgresql");
-    fs::create_dir_all(&driver_dir).expect("driver dir");
-    fs::write(driver_dir.join(LIB), b"ELF").expect("lib");
-    fs::write(driver_dir.join("manifest.toml"), b"manifest_version = 1").expect("manifest");
+    // `--platform <other>` leaves a library this host would not look for.
+    // Uninstall must still find it, or it could never be removed.
+    let host = crate::platform::Platform::detect().expect("supported host platform");
+    let other = crate::platform::Platform::ALL
+        .iter()
+        .copied()
+        .find(|platform| *platform != host)
+        .expect("another supported platform exists");
+    let version_dir = temp.version_dir(version);
+    let foreign = version_dir.join(Driver::Postgresql.installed_lib_filename(other));
+    fs::write(&foreign, b"FOREIGN").expect("lib");
 
     adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
-        .expect("uninstall should succeed");
+        .expect("uninstall should remove a foreign-platform library");
 
-    assert!(!driver_dir.exists(), "driver directory removed");
-    assert!(
-        !drivers_dir.exists(),
-        "emptied drivers directory pruned after removing the last driver",
-    );
+    assert!(!foreign.exists(), "foreign-platform library removed");
 }
