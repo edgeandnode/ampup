@@ -97,6 +97,50 @@ async fn adbc_install_places_driver_and_manifest() {
     );
 }
 
+#[tokio::test]
+async fn adbc_install_rejects_asset_without_digest() {
+    let temp = TempInstallDir::new().expect("temp install dir");
+    let version = "v1.0.0";
+    fs::write(temp.current_version_file(), version).expect("write active version");
+
+    let tarball = make_targz(&[
+        (LIB, b"ELF"),
+        ("LICENSE.txt", b"license"),
+        ("NOTICE.txt", b"notice"),
+    ]);
+
+    // Same release, except the asset advertises no digest.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock server");
+    let addr = listener.local_addr().expect("mock server address");
+    let release = mock_github::release_json(addr, version, &[(ASSET, None)]);
+    let routes = vec![
+        mock_github::Route::ok(format!("tags/{version}"), release),
+        mock_github::Route::ok("download/", tarball),
+    ];
+    let _server = mock_github::start(listener, routes);
+
+    let github = GitHubClient::with_api_base(format!("http://{addr}")).expect("mock client");
+    let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
+
+    let err = adbc::install_driver(
+        &github,
+        config,
+        Driver::Postgresql,
+        Some("x86_64".to_string()),
+        Some("linux".to_string()),
+    )
+    .await
+    .expect_err("install should refuse an asset without a digest");
+    assert!(err.to_string().contains("no digest"), "got: {err}");
+
+    assert!(
+        !temp.versions_dir().join(version).join("drivers").exists(),
+        "nothing should be installed when the digest is missing",
+    );
+}
+
 #[test]
 fn adbc_uninstall_removes_installed_driver() {
     let temp = TempInstallDir::new().expect("temp install dir");

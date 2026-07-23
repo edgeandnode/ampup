@@ -67,7 +67,16 @@ pub(crate) async fn install_driver(
         .expect("a required asset resolves to Some or errors");
 
     let data = download_with_retry(github, &asset).await?;
-    verify_artifact(&asset.name, &data, asset.digest.as_deref())
+    // Driver assets always advertise a digest, so a missing one means the
+    // release is malformed. Refuse rather than install a library that would be
+    // loaded into ampd without its integrity checked.
+    let digest = asset.digest.as_deref().ok_or_else(|| {
+        anyhow!(
+            "release asset {} has no digest; refusing to install an unverified driver",
+            asset.name
+        )
+    })?;
+    verify_artifact(&asset.name, &data, Some(digest))
         .context("driver archive failed verification")?;
 
     // Stage inside the drivers directory so the final rename stays on one
