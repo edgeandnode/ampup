@@ -22,9 +22,8 @@ use crate::{
     },
 };
 
-/// The library name inside the release archive (upstream's).
-const ARCHIVE_LIB: &str = "libadbc_driver_postgresql.so";
-/// The name it is installed under.
+/// The library name inside the release archive, already its final on-disk name
+/// (the release pipeline names it, edgeandnode/amp #2599).
 const INSTALLED_LIB: &str = "amp-adbc-driver-postgresql.so";
 const ASSET: &str = "adbc-driver-postgresql-linux-x86_64.tar.gz";
 
@@ -47,10 +46,11 @@ fn make_targz(files: &[(&str, &[u8])]) -> Vec<u8> {
         .expect("should finish gzip")
 }
 
-/// The driver archive as the release ships it.
+/// The driver archive as the release ships it: the library under its final
+/// name, plus the Apache-2.0 license files at the root.
 fn driver_tarball() -> Vec<u8> {
     make_targz(&[
-        (ARCHIVE_LIB, b"ELF"),
+        (INSTALLED_LIB, b"ELF"),
         ("LICENSE.txt", b"license"),
         ("NOTICE.txt", b"notice"),
     ])
@@ -115,21 +115,12 @@ async fn adbc_install_places_driver_in_the_version_dir() {
         fs::read(version_dir.join(INSTALLED_LIB)).expect("lib"),
         b"ELF",
     );
+    // The license files ship in the archive but are not placed on disk.
     assert!(
-        !version_dir.join(ARCHIVE_LIB).exists(),
-        "the upstream name must not survive alongside the renamed library",
+        !version_dir.join("LICENSE.txt").exists(),
+        "the license file is not extracted onto disk",
     );
-    assert!(
-        version_dir
-            .join("amp-adbc-driver-postgresql.LICENSE.txt")
-            .exists(),
-        "license sidecar is namespaced",
-    );
-    assert!(
-        version_dir
-            .join("amp-adbc-driver-postgresql.NOTICE.txt")
-            .exists(),
-    );
+    assert!(!version_dir.join("NOTICE.txt").exists());
 
     // The amp binaries it now shares a directory with are untouched.
     for binary in ["ampd", "ampctl", "ampsql"] {
@@ -265,7 +256,7 @@ async fn adbc_install_targets_an_explicit_version() {
 }
 
 #[test]
-fn adbc_uninstall_removes_the_library_and_its_sidecars() {
+fn adbc_uninstall_removes_the_library() {
     let temp = TempInstallDir::new().expect("temp install dir");
     let version = "v1.0.0";
     fs::write(temp.current_version_file(), version).expect("write active version");
@@ -273,23 +264,13 @@ fn adbc_uninstall_removes_the_library_and_its_sidecars() {
 
     let version_dir = temp.version_dir(version);
     fs::write(version_dir.join(INSTALLED_LIB), b"ELF").expect("lib");
-    fs::write(
-        version_dir.join("amp-adbc-driver-postgresql.LICENSE.txt"),
-        b"license",
-    )
-    .expect("license");
-    fs::write(
-        version_dir.join("amp-adbc-driver-postgresql.NOTICE.txt"),
-        b"notice",
-    )
-    .expect("notice");
 
     adbc::uninstall(Some(temp.path().to_path_buf()), "postgresql", None)
         .expect("uninstall should succeed");
 
     assert!(
         driver_artifacts(&version_dir).is_empty(),
-        "library and sidecars all removed",
+        "the driver library is removed",
     );
     // Uninstalling a driver must not disturb the amp binaries it sat beside.
     for binary in ["ampd", "ampctl", "ampsql"] {

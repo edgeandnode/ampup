@@ -32,31 +32,17 @@ impl Driver {
         Self::ALL.iter().copied().find(|d| d.as_str() == name)
     }
 
-    /// The library filename this driver's release archive carries on
-    /// `platform` (e.g. `libadbc_driver_postgresql.so` on Linux) — upstream's
-    /// own name, which the archive is validated against.
-    pub fn archive_lib_filename(&self, platform: Platform) -> String {
-        format!(
-            "libadbc_driver_{}.{}",
-            self.as_str(),
-            lib_extension(platform)
-        )
-    }
-
-    /// The library filename this driver is installed under, prefixed so it is
-    /// distinguishable from the amp binaries sharing its directory.
+    /// The driver library's filename on `platform` (e.g.
+    /// `amp-adbc-driver-postgresql.so` on Linux). The release pipeline names
+    /// the library inside the archive this way (edgeandnode/amp #2599), so it
+    /// is both the archive member and the on-disk name; ampup places it as-is
+    /// beside the amp binaries it shares a directory with.
     pub fn installed_lib_filename(&self, platform: Platform) -> String {
         format!(
             "{DRIVER_FILE_PREFIX}{}.{}",
             self.as_str(),
             lib_extension(platform)
         )
-    }
-
-    /// The stem shared by this driver's installed files, used for the license
-    /// sidecars. Platform-independent, so cleanup needs no platform.
-    pub fn installed_stem(&self) -> String {
-        format!("{DRIVER_FILE_PREFIX}{}", self.as_str())
     }
 }
 
@@ -111,47 +97,21 @@ mod tests {
     }
 
     #[test]
-    fn archive_lib_filename_is_the_upstream_platform_specific_name() {
-        assert_eq!(
-            Driver::Postgresql.archive_lib_filename(Platform::Linux),
-            "libadbc_driver_postgresql.so",
-        );
-        assert_eq!(
-            Driver::Postgresql.archive_lib_filename(Platform::Darwin),
-            "libadbc_driver_postgresql.dylib",
-        );
-    }
-
-    #[test]
-    fn installed_lib_filename_is_prefixed_and_distinct_from_the_archive_name() {
+    fn installed_lib_filename_is_prefixed_and_platform_specific() {
         for platform in Platform::ALL.iter().copied() {
             let installed = Driver::Postgresql.installed_lib_filename(platform);
             assert!(
                 installed.starts_with(DRIVER_FILE_PREFIX),
-                "installed name namespaces the driver: {installed}",
-            );
-            assert_ne!(
-                installed,
-                Driver::Postgresql.archive_lib_filename(platform),
-                "the driver is renamed on install",
+                "installed name namespaces the driver against the amp binaries: {installed}",
             );
         }
         assert_eq!(
+            Driver::Postgresql.installed_lib_filename(Platform::Linux),
+            "amp-adbc-driver-postgresql.so",
+        );
+        assert_eq!(
             Driver::Postgresql.installed_lib_filename(Platform::Darwin),
             "amp-adbc-driver-postgresql.dylib",
-        );
-    }
-
-    #[test]
-    fn installed_stem_prefixes_every_installed_file() {
-        let stem = Driver::Postgresql.installed_stem();
-        assert_eq!(stem, "amp-adbc-driver-postgresql");
-        // The sidecars and the library share the stem, so cleanup by stem
-        // catches all of them without knowing the platform.
-        assert!(
-            Driver::Postgresql
-                .installed_lib_filename(Platform::Linux)
-                .starts_with(&stem)
         );
     }
 }
