@@ -95,7 +95,7 @@ async fn adbc_install_places_driver_in_the_version_dir() {
     ];
     let _server = mock_github::start(listener, routes);
 
-    let github = GitHubClient::with_api_base(format!("http://{addr}")).expect("mock client");
+    let github = GitHubClient::with_api_base(format!("http://{addr}"), None).expect("mock client");
     let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
 
     adbc::install_driver(
@@ -156,7 +156,7 @@ async fn adbc_install_rejects_asset_without_digest() {
     ];
     let _server = mock_github::start(listener, routes);
 
-    let github = GitHubClient::with_api_base(format!("http://{addr}")).expect("mock client");
+    let github = GitHubClient::with_api_base(format!("http://{addr}"), None).expect("mock client");
     let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
 
     let err = adbc::install_driver(
@@ -185,7 +185,8 @@ async fn adbc_install_refuses_a_version_that_is_not_installed() {
     MockBinary::create(&temp, "v1.0.0").expect("install version binaries");
 
     // No mock server: resolving the version fails before anything is fetched.
-    let github = GitHubClient::with_api_base("http://127.0.0.1:1".to_string()).expect("client");
+    let github =
+        GitHubClient::with_api_base("http://127.0.0.1:1".to_string(), None).expect("client");
     let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
 
     let err = adbc::install_driver(
@@ -231,7 +232,7 @@ async fn adbc_install_targets_an_explicit_version() {
     ];
     let _server = mock_github::start(listener, routes);
 
-    let github = GitHubClient::with_api_base(format!("http://{addr}")).expect("mock client");
+    let github = GitHubClient::with_api_base(format!("http://{addr}"), None).expect("mock client");
     let config = Config::new(Some(temp.path().to_path_buf())).expect("config");
 
     adbc::install_driver(

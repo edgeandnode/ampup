@@ -8,6 +8,7 @@ use crate::{DEFAULT_REPO, DEFAULT_SELF_REPO, rate_limiter::GitHubRateLimiter};
 
 const AMPUP_API_URL: &str = "https://ampup.sh/api";
 const GITHUB_API_URL: &str = "https://api.github.com";
+const GITHUB_API_HOST: &str = "api.github.com";
 
 #[derive(Debug)]
 pub enum GitHubError {
@@ -267,15 +268,6 @@ impl GitHubClient {
             reqwest::header::HeaderValue::from_static("ampup"),
         );
 
-        if let Some(token) = &github_token {
-            let auth_value = format!("Bearer {}", token);
-            headers.insert(
-                reqwest::header::AUTHORIZATION,
-                reqwest::header::HeaderValue::from_str(&auth_value)
-                    .context("Invalid access token")?,
-            );
-        }
-
         let client = reqwest::Client::builder()
             .default_headers(headers)
             .build()
@@ -297,18 +289,19 @@ impl GitHubClient {
     /// Create a client with a custom API base URL for testing.
     ///
     /// `api_base` replaces the standard GitHub API URL so requests go to a
-    /// local mock server instead.
+    /// local mock server instead. `github_token` lets a test assert which
+    /// hosts the credential is, and is not, sent to.
     #[cfg(test)]
-    pub(crate) fn with_api_base(api_base: String) -> Result<Self> {
+    pub(crate) fn with_api_base(api_base: String, github_token: Option<String>) -> Result<Self> {
         let client = reqwest::Client::builder()
             .build()
             .context("Failed to create request client")?;
-        let rate_limiter = Arc::new(GitHubRateLimiter::new(false));
+        let rate_limiter = Arc::new(GitHubRateLimiter::new(github_token.is_some()));
 
         Ok(Self {
             client,
             repo: "test/repo".to_string(),
-            token: None,
+            token: github_token,
             api: api_base,
             rate_limiter,
         })
@@ -386,6 +379,20 @@ impl GitHubClient {
             self.download_asset_via_api(asset.id, &asset.name).await
         } else {
             self.download_asset_direct(&asset.url, &asset.name).await
+        }
+    }
+
+    /// Attach the configured GitHub credential, but only to requests bound for
+    /// the GitHub API.
+    ///
+    /// The token is resolved from the user's `gh` login, while release metadata
+    /// for supported repos is served by `ampup.sh`. Authenticating per-request
+    /// rather than through a client-wide default header keeps the credential
+    /// from reaching any non-GitHub host.
+    fn with_auth(&self, request: reqwest::RequestBuilder, url: &str) -> reqwest::RequestBuilder {
+        match &self.token {
+            Some(token) if is_github_api_url(url) => request.bearer_auth(token),
+            _ => request,
         }
     }
 
@@ -483,7 +490,10 @@ impl GitHubClient {
         let url = format!("{}/{}", self.api, path);
 
         let response = self
-            .send_with_rate_limit(|| self.client.get(&url), "Failed to fetch release")
+            .send_with_rate_limit(
+                || self.with_auth(self.client.get(&url), &url),
+                "Failed to fetch release",
+            )
             .await?;
 
         if !response.status().is_success() {
@@ -551,9 +561,12 @@ impl GitHubClient {
         let response = self
             .send_with_rate_limit(
                 || {
-                    self.client
-                        .get(&url)
-                        .header(reqwest::header::ACCEPT, "application/octet-stream")
+                    self.with_auth(
+                        self.client
+                            .get(&url)
+                            .header(reqwest::header::ACCEPT, "application/octet-stream"),
+                        &url,
+                    )
                 },
                 "Failed to download asset",
             )
@@ -565,7 +578,10 @@ impl GitHubClient {
     /// Download asset directly (for public repos)
     async fn download_asset_direct(&self, url: &str, asset_name: &str) -> Result<Vec<u8>> {
         let response = self
-            .send_with_rate_limit(|| self.client.get(url), "Failed to download asset")
+            .send_with_rate_limit(
+                || self.with_auth(self.client.get(url), url),
+                "Failed to download asset",
+            )
             .await?;
 
         self.download_response(response, url, asset_name).await
@@ -609,6 +625,20 @@ fn release_api_base(repo: &str) -> String {
     }
 }
 
+/// Whether `url` addresses the GitHub API, and so may carry the user's GitHub
+/// credential.
+///
+/// Matches on the parsed host rather than a prefix so a lookalike hostname
+/// (`api.github.com.example.net`) cannot claim the token, and requires HTTPS so
+/// it is never sent in cleartext.
+fn is_github_api_url(url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(url) else {
+        return false;
+    };
+
+    url.scheme() == "https" && url.host_str() == Some(GITHUB_API_HOST)
+}
+
 fn repo_slug(repo: &str) -> Option<&'static str> {
     match repo {
         DEFAULT_REPO => Some("amp"),
@@ -622,6 +652,7 @@ mod tests {
     use anyhow::Result;
 
     use super::*;
+    use crate::tests::mock_github;
 
     #[test]
     fn release_api_base_with_amp_repo_uses_ampup_api_slug() {
@@ -662,6 +693,68 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn get_release_with_non_github_api_host_omits_the_github_credential() -> Result<()> {
+        //* Given
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let body = mock_github::release_json(addr, "v1.0.0", &[]);
+        let (_server, requests) =
+            mock_github::start_recording(listener, vec![mock_github::Route::ok("/tags/", body)]);
+        let client = GitHubClient::with_api_base(
+            format!("http://{addr}"),
+            Some("secret-github-token".to_string()),
+        )?;
+
+        //* When
+        let release = client.get_release("tags/v1.0.0").await?;
+
+        //* Then
+        assert_eq!(release.tag, "v1.0.0", "the mock release should be returned");
+
+        let requests = requests
+            .lock()
+            .expect("recorder lock should not be poisoned");
+        assert_eq!(requests.len(), 1, "exactly one request should be recorded");
+        assert!(
+            !requests[0].to_lowercase().contains("authorization:"),
+            "a non-GitHub metadata host must never receive the GitHub credential, got: {}",
+            requests[0]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn is_github_api_url_with_github_api_host_returns_true() {
+        //* Given
+        let url = "https://api.github.com/repos/edgeandnode/amp/releases/assets/1";
+
+        //* When
+        let is_github = is_github_api_url(url);
+
+        //* Then
+        assert!(
+            is_github,
+            "the GitHub API host should accept the credential"
+        );
+    }
+
+    #[test]
+    fn is_github_api_url_with_lookalike_host_returns_false() {
+        //* Given
+        let url = "https://api.github.com.example.net/repos/edgeandnode/amp/releases";
+
+        //* When
+        let is_github = is_github_api_url(url);
+
+        //* Then
+        assert!(
+            !is_github,
+            "a host merely prefixed with the GitHub API host must not receive the credential"
+        );
     }
 
     #[test]

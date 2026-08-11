@@ -5,6 +5,8 @@
 //! [`GitHubClient`](crate::github::GitHubClient) at the returned base URL via
 //! `with_api_base`. Requests are matched by a path substring.
 
+use std::sync::{Arc, Mutex};
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A single mock route: any request whose path contains `prefix` receives
@@ -63,17 +65,34 @@ pub(crate) fn start(
     listener: tokio::net::TcpListener,
     routes: Vec<Route>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+    start_recording(listener, routes).0
+}
+
+/// Like [`start`], but also returns the raw text of every request received, in
+/// arrival order, so a test can assert on the headers the client sent.
+pub(crate) fn start_recording(
+    listener: tokio::net::TcpListener,
+    routes: Vec<Route>,
+) -> (tokio::task::JoinHandle<()>, Arc<Mutex<Vec<String>>>) {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&received);
+
+    let handle = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 break;
             };
             let routes = routes.clone();
+            let recorder = Arc::clone(&recorder);
 
             tokio::spawn(async move {
                 let mut buf = [0u8; 4096];
                 let n = stream.read(&mut buf).await.expect("should read request");
                 let request = String::from_utf8_lossy(&buf[..n]);
+                recorder
+                    .lock()
+                    .expect("recorder lock should not be poisoned")
+                    .push(request.to_string());
                 let path = request
                     .lines()
                     .next()
@@ -103,5 +122,7 @@ pub(crate) fn start(
                     .expect("should write response");
             });
         }
-    })
+    });
+
+    (handle, received)
 }

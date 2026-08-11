@@ -893,7 +893,7 @@ mod tests {
 
                 let api_base = format!("http://{}", addr);
                 let github =
-                    GitHubClient::with_api_base(api_base).expect("should create test client");
+                    GitHubClient::with_api_base(api_base, None).expect("should create test client");
                 let manager = DownloadManager::new(github, max_concurrent);
 
                 let tmp = tempfile::tempdir().expect("should create temp directory");
