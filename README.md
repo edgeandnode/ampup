@@ -134,6 +134,26 @@ ampup build --branch main --jobs 8
 ampup update
 ```
 
+### ADBC Drivers
+
+Some amp features need an optional ADBC driver library. `ampup adbc` installs these alongside the amp binaries for a version.
+
+```sh
+# Install a driver for the active version
+ampup adbc install postgresql
+
+# Install for a specific version
+ampup adbc install postgresql --version v0.1.0
+
+# List installed drivers
+ampup adbc list
+
+# Uninstall a driver
+ampup adbc uninstall postgresql
+```
+
+The driver is downloaded from the matching amp release, verified against its published checksum, and placed in the version directory. `--platform` and `--arch` override detection, the same as `install`.
+
 ## How It Works
 
 `ampup` is a Rust-based version manager with a minimal bootstrap script for installation.
@@ -152,9 +172,10 @@ ampup update
 │   └── ampd             # Symlink to active version
 ├── versions/
 │   ├── v0.1.0/
-│   │   └── ampd         # Binary for v0.1.0
+│   │   ├── ampd                          # Binary for v0.1.0
+│   │   └── amp-adbc-driver-<driver>.so   # Optional ADBC driver (when installed)
 │   └── v0.2.0/
-│       └── ampd         # Binary for v0.2.0
+│       └── ampd                          # Binary for v0.2.0
 └── .version             # Tracks active version
 ```
 

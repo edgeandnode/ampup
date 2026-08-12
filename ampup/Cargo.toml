@@ -15,6 +15,7 @@ anyhow = "1.0.80"
 clap = { version = "4.5.2", features = ["derive", "env"] }
 console = "0.16"
 dialoguer = "0.12"
+flate2 = "1.0"
 fs-err = "3.0.0"
 futures = "0.3"
 reqwest = { version = "0.13", default-features = false, features = [
@@ -25,6 +26,8 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 semver = { version = "1.0.18", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10"
+tar = "0.4"
 tempfile = "3.13.0"
 tokio = { version = "1.36.0", features = [
     "macros",

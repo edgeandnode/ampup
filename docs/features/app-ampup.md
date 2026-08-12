@@ -26,6 +26,7 @@ ampup is the official version manager and installer for Amp binaries (`ampd`, pl
 - **Builder**: Compiles ampd/ampctl/ampsql from source using cargo, supporting branch, commit, PR, or local path builds
 - **Self-updater**: Atomic in-place binary replacement for updating ampup itself to the latest version
 - **Active Version**: The currently selected version, tracked via symlinks in `~/.amp/bin/` and `.version` file
+- **ADBC Drivers**: Optional destination-specific driver libraries, installed from the release into a version directory beside the amp binaries and managed per version
 
 ## Usage
 
@@ -138,6 +139,29 @@ ampup self version
 
 The self-update performs atomic in-place replacement of the running executable.
 
+### ADBC Drivers
+
+Optional ADBC driver libraries are installed per amp version, alongside the binaries in that version's directory.
+
+```bash
+# Install a driver for the active version
+ampup adbc install postgresql
+
+# Install for a specific amp version
+ampup adbc install postgresql --version v0.1.0
+
+# Override platform/arch detection
+ampup adbc install postgresql --platform linux --arch aarch64
+
+# List installed drivers for the active version
+ampup adbc list
+
+# Uninstall a driver
+ampup adbc uninstall postgresql
+```
+
+Each command defaults to the active amp version and accepts `--version` to target another. `postgresql` is the currently supported driver. Installing requires the target version's binaries to be present, so a driver cannot be stranded under a version that a later `ampup install` would replace.
+
 ## Architecture
 
 ### Directory Structure
@@ -153,7 +177,8 @@ The self-update performs atomic in-place replacement of the running executable.
 │   ├── v0.1.0/
 │   │   ├── ampd
 │   │   ├── ampctl
-│   │   └── ampsql
+│   │   ├── ampsql
+│   │   └── amp-adbc-driver-<driver>.so   # Optional ADBC driver (.dylib on macOS)
 │   ├── v0.2.0/
 │   │   ├── ampd
 │   │   ├── ampctl
@@ -195,6 +220,16 @@ The self-update performs atomic in-place replacement of the running executable.
 4. Extract version from `ampd --version` output
 5. Copy `target/release/ampd` (required) plus `ampctl`/`ampsql` when produced to `~/.amp/versions/<version>/`; when an optional binary is not produced, any stale copy from a previous build of the same version is removed so activation cannot symlink an outdated binary
 6. Activate version (create symlinks)
+
+### ADBC Driver Install Flow
+
+1. User runs `ampup adbc install <driver> [--version <v>]`
+2. Resolve the amp version (explicit `--version` or the active one) and require its binaries to be installed
+3. Detect platform (Linux/Darwin) and architecture (x86_64/aarch64), or take `--platform`/`--arch`
+4. Query the GitHub API for the version's release and resolve the `adbc-driver-{driver}-{platform}-{arch}.tar.gz` asset
+5. Download the archive and verify its SHA-256 against the asset's published digest (an asset without a digest is rejected)
+6. Extract into a staging directory inside the version directory (same filesystem, so the move is atomic)
+7. Move the driver library into the version directory beside the amp binaries; the archive's license files are validated in staging but not placed beside the binaries
 
 ### Communication
 

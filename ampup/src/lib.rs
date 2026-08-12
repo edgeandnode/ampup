@@ -1,3 +1,5 @@
+pub mod adbc;
+pub mod archive;
 pub mod builder;
 pub mod commands;
 pub mod config;

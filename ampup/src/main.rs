@@ -158,6 +158,12 @@ enum Commands {
         #[command(subcommand)]
         command: SelfCommands,
     },
+
+    /// Manage optional ADBC driver components
+    Adbc {
+        #[command(subcommand)]
+        command: AdbcCommands,
+    },
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -175,6 +181,64 @@ enum SelfCommands {
 
     /// Print the version of ampup
     Version,
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum AdbcCommands {
+    /// Install an ADBC driver for an amp version
+    Install {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+
+        /// Driver to install (e.g. postgresql)
+        driver: String,
+
+        /// GitHub repository in format "owner/repo"
+        #[arg(long, default_value_t = DEFAULT_REPO.to_string())]
+        repo: String,
+
+        /// GitHub token for private repository access (defaults to $GITHUB_TOKEN)
+        #[arg(long, env = "GITHUB_TOKEN", hide_env = true)]
+        github_token: Option<String>,
+
+        /// Override architecture detection (x86_64, aarch64)
+        #[arg(long)]
+        arch: Option<String>,
+
+        /// Override platform detection (linux, darwin)
+        #[arg(long)]
+        platform: Option<String>,
+
+        /// Amp version to install the driver for (defaults to the active one)
+        #[arg(long = "version", value_name = "VERSION")]
+        amp_version: Option<String>,
+    },
+
+    /// List installed ADBC drivers for an amp version
+    List {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+
+        /// Amp version to list drivers for (defaults to the active one)
+        #[arg(long = "version", value_name = "VERSION")]
+        amp_version: Option<String>,
+    },
+
+    /// Uninstall an ADBC driver from an amp version
+    Uninstall {
+        /// Installation directory (defaults to $AMP_DIR or $XDG_CONFIG_HOME/.amp or $HOME/.amp)
+        #[arg(long, env = "AMP_DIR")]
+        install_dir: Option<std::path::PathBuf>,
+
+        /// Driver to uninstall (e.g. postgresql)
+        driver: String,
+
+        /// Amp version to uninstall the driver from (defaults to the active one)
+        #[arg(long = "version", value_name = "VERSION")]
+        amp_version: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -264,6 +328,41 @@ async fn run() -> anyhow::Result<()> {
             }
             SelfCommands::Version => {
                 println!("ampup {}", env!("VERGEN_GIT_DESCRIBE"));
+            }
+        },
+        Some(Commands::Adbc { command }) => match command {
+            AdbcCommands::Install {
+                install_dir,
+                driver,
+                repo,
+                github_token,
+                arch,
+                platform,
+                amp_version,
+            } => {
+                commands::adbc::install(
+                    &driver,
+                    install_dir,
+                    repo,
+                    github_token,
+                    arch,
+                    platform,
+                    amp_version,
+                )
+                .await?;
+            }
+            AdbcCommands::List {
+                install_dir,
+                amp_version,
+            } => {
+                commands::adbc::list(install_dir, amp_version)?;
+            }
+            AdbcCommands::Uninstall {
+                install_dir,
+                driver,
+                amp_version,
+            } => {
+                commands::adbc::uninstall(install_dir, &driver, amp_version)?;
             }
         },
         None => {

@@ -74,6 +74,17 @@ pub enum DownloadError {
     /// where the semaphore was dropped or closed while tasks were still waiting
     /// to acquire permits.
     SemaphoreClosed { artifact_name: String },
+
+    /// Downloaded artifact's SHA-256 did not match the digest advertised by
+    /// the release metadata.
+    ///
+    /// The bytes were corrupted or truncated in transit, or the release
+    /// metadata and asset are inconsistent.
+    ChecksumMismatch {
+        artifact_name: String,
+        expected: String,
+        actual: String,
+    },
 }
 
 impl std::fmt::Display for DownloadError {
@@ -117,6 +128,21 @@ impl std::fmt::Display for DownloadError {
                 writeln!(f, "Internal error: concurrency semaphore closed")?;
                 write!(f, "  Artifact: {}", artifact_name)?;
             }
+            Self::ChecksumMismatch {
+                artifact_name,
+                expected,
+                actual,
+            } => {
+                writeln!(f, "Downloaded artifact failed integrity check")?;
+                writeln!(f, "  Artifact: {}", artifact_name)?;
+                writeln!(f, "  Expected SHA-256: {}", expected)?;
+                writeln!(f, "  Actual SHA-256:   {}", actual)?;
+                writeln!(f)?;
+                write!(
+                    f,
+                    "  The download was corrupted or truncated. Please try again."
+                )?;
+            }
         }
         Ok(())
     }
@@ -127,7 +153,9 @@ impl std::error::Error for DownloadError {
         match self {
             Self::TaskFailed { source, .. } => Some(source.as_ref()),
             Self::StagingWrite { source, .. } => Some(source),
-            Self::EmptyArtifact { .. } | Self::SemaphoreClosed { .. } => None,
+            Self::EmptyArtifact { .. }
+            | Self::SemaphoreClosed { .. }
+            | Self::ChecksumMismatch { .. } => None,
         }
     }
 }
@@ -139,8 +167,9 @@ impl std::error::Error for DownloadError {
 /// Manages bounded-concurrent downloads of release artifacts.
 ///
 /// Downloads proceed in parallel up to `max_concurrent` tasks. Each task
-/// downloads an artifact, verifies it (currently: non-empty check), and
-/// writes it to a staging directory. Only after all tasks succeed does
+/// downloads an artifact, verifies it (non-empty, plus a SHA-256 digest check
+/// when the release advertises one), and writes it to a staging directory.
+/// Only after all tasks succeed does
 /// the staging directory get atomically renamed to the final version
 /// directory.
 ///
@@ -230,7 +259,7 @@ impl DownloadManager {
                 reporter.component_started(&task.artifact_name);
 
                 let data = download_with_retry(&github, &asset).await?;
-                verify_artifact(&task.artifact_name, &data)?;
+                verify_artifact(&task.artifact_name, &data, asset.digest.as_deref())?;
                 write_to_staging(&staging_path, &task.dest_filename, &data)?;
 
                 Ok(task.artifact_name)
@@ -345,7 +374,7 @@ fn append_extension(path: &Path, ext: &str) -> PathBuf {
 /// already handled at the HTTP layer by `GitHubClient::send_with_rate_limit`,
 /// so a rate-limited request will have been retried there before surfacing
 /// as an error here.
-async fn download_with_retry(
+pub(crate) async fn download_with_retry(
     github: &GitHubClient,
     asset: &ResolvedAsset,
 ) -> std::result::Result<Vec<u8>, DownloadError> {
@@ -366,15 +395,46 @@ async fn download_with_retry(
     }
 }
 
-/// Verify a downloaded artifact. Currently checks non-empty.
-/// Per-artifact checksum/attestation verification will be added in a follow-up PR.
-fn verify_artifact(artifact_name: &str, data: &[u8]) -> std::result::Result<(), DownloadError> {
+/// Verify a downloaded artifact: it must be non-empty, and — when the release
+/// advertises a digest — its SHA-256 must match.
+///
+/// `expected_digest` is the release-metadata digest (e.g. `"sha256:<hex>"`), or
+/// `None` when the release does not provide one, in which case only the
+/// non-empty check applies.
+pub(crate) fn verify_artifact(
+    artifact_name: &str,
+    data: &[u8],
+    expected_digest: Option<&str>,
+) -> std::result::Result<(), DownloadError> {
     if data.is_empty() {
         return Err(DownloadError::EmptyArtifact {
             artifact_name: artifact_name.to_string(),
         });
     }
+
+    if let Some(expected) = expected_digest {
+        // GitHub advertises digests as "sha256:<hex>"; tolerate a bare hex too.
+        let expected_hex = expected.strip_prefix("sha256:").unwrap_or(expected);
+        let actual_hex = sha256_hex(data);
+        if !actual_hex.eq_ignore_ascii_case(expected_hex) {
+            return Err(DownloadError::ChecksumMismatch {
+                artifact_name: artifact_name.to_string(),
+                expected: expected_hex.to_ascii_lowercase(),
+                actual: actual_hex,
+            });
+        }
+    }
+
     Ok(())
+}
+
+/// Lowercase hex SHA-256 of `data`.
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Write artifact data to the staging directory.
@@ -397,7 +457,8 @@ fn download_error_artifact_name(err: &DownloadError) -> &str {
         DownloadError::TaskFailed { artifact_name, .. }
         | DownloadError::EmptyArtifact { artifact_name }
         | DownloadError::StagingWrite { artifact_name, .. }
-        | DownloadError::SemaphoreClosed { artifact_name } => artifact_name,
+        | DownloadError::SemaphoreClosed { artifact_name }
+        | DownloadError::ChecksumMismatch { artifact_name, .. } => artifact_name,
     }
 }
 
@@ -437,7 +498,7 @@ mod tests {
             let data: Vec<u8> = vec![];
 
             //* When
-            let result = verify_artifact("ampd-linux-x86_64", &data);
+            let result = verify_artifact("ampd-linux-x86_64", &data, None);
 
             //* Then
             let err = result.expect_err("should return DownloadError for empty data");
@@ -446,6 +507,49 @@ mod tests {
                 "expected EmptyArtifact error, got: {:?}",
                 err
             );
+        }
+
+        /// SHA-256 of "abc": a known vector used to exercise digest matching.
+        const ABC_SHA256: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+        /// A matching digest passes, and the `sha256:` prefix is accepted.
+        #[test]
+        fn verify_artifact_accepts_matching_digest() {
+            let data = b"abc";
+            verify_artifact("driver", data, Some(&format!("sha256:{ABC_SHA256}")))
+                .expect("matching digest should verify");
+            // Bare hex (no prefix) is tolerated too.
+            verify_artifact("driver", data, Some(ABC_SHA256))
+                .expect("bare-hex matching digest should verify");
+            // Digest comparison is case-insensitive.
+            verify_artifact("driver", data, Some(&ABC_SHA256.to_uppercase()))
+                .expect("uppercase digest should verify");
+        }
+
+        /// A wrong digest is rejected with `ChecksumMismatch`.
+        #[test]
+        fn verify_artifact_rejects_mismatched_digest() {
+            let data = b"abc";
+            let wrong = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+            let err = verify_artifact("driver", data, Some(wrong))
+                .expect_err("mismatched digest should fail");
+
+            assert!(
+                matches!(err, DownloadError::ChecksumMismatch { .. }),
+                "expected ChecksumMismatch, got: {:?}",
+                err
+            );
+        }
+
+        /// With no advertised digest, only the non-empty check applies.
+        #[test]
+        fn verify_artifact_without_digest_only_checks_non_empty() {
+            verify_artifact("driver", b"abc", None).expect("non-empty data should verify");
+
+            let err = verify_artifact("driver", b"", None)
+                .expect_err("empty data should still fail without a digest");
+            assert!(matches!(err, DownloadError::EmptyArtifact { .. }));
         }
     }
 
@@ -720,18 +824,26 @@ mod tests {
             })
         }
 
-        /// Build release JSON for the mock server with the given assets.
-        fn release_json(addr: std::net::SocketAddr, asset_names: &[&str]) -> Vec<u8> {
-            let assets: Vec<String> = asset_names
+        /// Build release JSON where each asset may advertise a `digest`.
+        fn release_json_with_digests(
+            addr: std::net::SocketAddr,
+            assets: &[(&str, Option<&str>)],
+        ) -> Vec<u8> {
+            let assets: Vec<String> = assets
                 .iter()
                 .enumerate()
-                .map(|(i, name)| {
+                .map(|(i, (name, digest))| {
+                    let digest_field = match digest {
+                        Some(d) => format!(r#","digest":"{d}""#),
+                        None => String::new(),
+                    };
                     format!(
-                        r#"{{"id":{},"name":"{}","browser_download_url":"http://{}/download/{}"}}"#,
+                        r#"{{"id":{},"name":"{}","browser_download_url":"http://{}/download/{}"{}}}"#,
                         i + 1,
                         name,
                         addr,
                         name,
+                        digest_field,
                     )
                 })
                 .collect();
@@ -756,12 +868,24 @@ mod tests {
                 download_routes: Vec<Route>,
                 max_concurrent: usize,
             ) -> Self {
+                let assets: Vec<(&str, Option<&str>)> =
+                    release_assets.iter().map(|name| (*name, None)).collect();
+                Self::new_with_digests(&assets, download_routes, max_concurrent).await
+            }
+
+            /// Like [`new`](Self::new), but each release asset may advertise a
+            /// `digest` in its metadata.
+            async fn new_with_digests(
+                release_assets: &[(&str, Option<&str>)],
+                download_routes: Vec<Route>,
+                max_concurrent: usize,
+            ) -> Self {
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                     .await
                     .expect("should bind to a random port");
                 let addr = listener.local_addr().expect("should have a local address");
 
-                let release_body = release_json(addr, release_assets);
+                let release_body = release_json_with_digests(addr, release_assets);
                 let mut routes = vec![Route::ok("tags/v1.0.0", release_body)];
                 routes.extend(download_routes);
 
@@ -769,7 +893,7 @@ mod tests {
 
                 let api_base = format!("http://{}", addr);
                 let github =
-                    GitHubClient::with_api_base(api_base).expect("should create test client");
+                    GitHubClient::with_api_base(api_base, None).expect("should create test client");
                 let manager = DownloadManager::new(github, max_concurrent);
 
                 let tmp = tempfile::tempdir().expect("should create temp directory");
@@ -849,6 +973,76 @@ mod tests {
                 fs::read(fixture.version_dir.join("ampctl")).expect("should read ampctl"),
                 ampctl_data,
                 "ampctl binary should match downloaded content"
+            );
+        }
+
+        /// A correct release digest verifies through the full download pipeline.
+        #[tokio::test]
+        async fn download_all_verifies_matching_digest() {
+            //* Given
+            let ampd_data = b"fake-ampd-binary".to_vec();
+            let digest = format!("sha256:{}", super::super::sha256_hex(&ampd_data));
+
+            let fixture = TestFixture::new_with_digests(
+                &[("ampd-linux-x86_64", Some(digest.as_str()))],
+                vec![Route::ok("download/ampd-linux-x86_64", ampd_data.clone())],
+                4,
+            )
+            .await;
+
+            //* When
+            let result = fixture
+                .download(vec![DownloadTask {
+                    artifact_name: "ampd-linux-x86_64".to_string(),
+                    dest_filename: "ampd".to_string(),
+                    optional: false,
+                }])
+                .await;
+
+            //* Then
+            assert!(
+                result.is_ok(),
+                "a valid digest should verify: {:?}",
+                result.err()
+            );
+            assert_eq!(
+                fs::read(fixture.version_dir.join("ampd")).expect("should read ampd"),
+                ampd_data,
+            );
+        }
+
+        /// A wrong release digest fails the batch and leaves no partial install.
+        #[tokio::test]
+        async fn download_all_rejects_mismatched_digest() {
+            //* Given
+            let ampd_data = b"fake-ampd-binary".to_vec();
+            let wrong = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+
+            let fixture = TestFixture::new_with_digests(
+                &[("ampd-linux-x86_64", Some(wrong))],
+                vec![Route::ok("download/ampd-linux-x86_64", ampd_data)],
+                4,
+            )
+            .await;
+
+            //* When
+            let result = fixture
+                .download(vec![DownloadTask {
+                    artifact_name: "ampd-linux-x86_64".to_string(),
+                    dest_filename: "ampd".to_string(),
+                    optional: false,
+                }])
+                .await;
+
+            //* Then
+            let err = result.expect_err("a mismatched digest should fail the download");
+            assert!(
+                err.to_string().contains("integrity check"),
+                "expected an integrity-check error, got: {err}"
+            );
+            assert!(
+                !fixture.version_dir.exists(),
+                "no version directory should be created on integrity failure"
             );
         }
 
