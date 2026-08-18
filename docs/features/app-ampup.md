@@ -160,7 +160,7 @@ ampup adbc list
 ampup adbc uninstall postgresql
 ```
 
-Each command defaults to the active amp version and accepts `--version` to target another. `postgresql` is the currently supported driver. Installing requires the target version's binaries to be present, so a driver cannot be stranded under a version that a later `ampup install` would replace.
+Each command defaults to the active amp version and accepts `--version` to target another. `postgresql` and `snowflake` are the currently supported drivers. Installing requires the target version's binaries to be present, so a driver cannot be stranded under a version that a later `ampup install` would replace.
 
 ## Architecture
 
