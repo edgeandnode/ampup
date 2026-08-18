@@ -14,16 +14,18 @@ pub const DRIVER_FILE_PREFIX: &str = "amp-adbc-driver-";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Driver {
     Postgresql,
+    Snowflake,
 }
 
 impl Driver {
     /// Every supported driver.
-    pub const ALL: &'static [Driver] = &[Driver::Postgresql];
+    pub const ALL: &'static [Driver] = &[Driver::Postgresql, Driver::Snowflake];
 
     /// The driver's canonical name (the `<driver>` segment in asset names).
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Postgresql => "postgresql",
+            Self::Snowflake => "snowflake",
         }
     }
 
@@ -87,11 +89,20 @@ mod tests {
             asset_name(Driver::Postgresql, Platform::Darwin, Architecture::Aarch64),
             "adbc-driver-postgresql-darwin-aarch64.tar.gz",
         );
+        assert_eq!(
+            asset_name(Driver::Snowflake, Platform::Linux, Architecture::Aarch64),
+            "adbc-driver-snowflake-linux-aarch64.tar.gz",
+        );
+        assert_eq!(
+            asset_name(Driver::Snowflake, Platform::Darwin, Architecture::X86_64),
+            "adbc-driver-snowflake-darwin-x86_64.tar.gz",
+        );
     }
 
     #[test]
     fn from_name_accepts_supported_and_rejects_unknown() {
         assert_eq!(Driver::from_name("postgresql"), Some(Driver::Postgresql));
+        assert_eq!(Driver::from_name("snowflake"), Some(Driver::Snowflake));
         assert_eq!(Driver::from_name("mysql"), None);
         assert_eq!(Driver::from_name(""), None);
     }
