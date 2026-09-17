@@ -127,6 +127,15 @@ ampup update -j 8
 ampup install
 ```
 
+### Agent Skills
+
+```bash
+# Install amp agent skills into the current project
+ampup skills add
+```
+
+See [app-ampup-skills](app-ampup-skills.md) for installing, listing, updating, and removing skills.
+
 ### Self-Update
 
 ```bash
@@ -236,6 +245,7 @@ Each command defaults to the active amp version and accepts `--version` to targe
 ```
 ampup → GitHub Releases API      # Download pre-built binaries
 ampup → GitHub API (tags, PRs)   # Fetch source for builds
+ampup → GitHub API (tarball)     # Fetch agent skills from source
 ampup → ampup.sh/install         # Installation script download
 ```
 

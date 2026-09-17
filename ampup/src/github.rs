@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::{num::NonZeroU32, sync::Arc};
 
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use serde::Deserialize;
+use tokio::io::AsyncWriteExt as _;
 
 use crate::{DEFAULT_REPO, DEFAULT_SELF_REPO, rate_limiter::GitHubRateLimiter};
 
@@ -43,6 +44,20 @@ pub enum GitHubError {
     },
     RateLimited {
         retry_after_secs: u64,
+        has_token: bool,
+    },
+    /// A git ref (tag, branch, or commit) does not exist. GitHub answers 404 or
+    /// 422; without a token this can also mean the repository is private.
+    RefNotFound {
+        repo: String,
+        git_ref: String,
+        has_token: bool,
+    },
+    /// A pull request number does not exist. Without a token this can also
+    /// mean the repository is private.
+    PullRequestNotFound {
+        repo: String,
+        number: NonZeroU32,
         has_token: bool,
     },
 }
@@ -164,6 +179,39 @@ impl std::fmt::Display for GitHubError {
                     writeln!(f, "  Try: export GITHUB_TOKEN=$(gh auth token)")?;
                 }
             }
+            Self::RefNotFound {
+                repo,
+                git_ref,
+                has_token,
+            } => {
+                writeln!(f, "Git ref not found")?;
+                writeln!(f, "  Repository: {}", repo)?;
+                writeln!(f, "  Ref: {}", git_ref)?;
+                writeln!(f)?;
+                if *has_token {
+                    writeln!(f, "  No tag, branch, or commit with this name exists.")?;
+                    writeln!(f, "  Try: --ref <tag|branch|commit>")?;
+                } else {
+                    writeln!(f, "  The repository is private or requires authentication.")?;
+                    writeln!(f, "  Try: export GITHUB_TOKEN=$(gh auth token)")?;
+                }
+            }
+            Self::PullRequestNotFound {
+                repo,
+                number,
+                has_token,
+            } => {
+                writeln!(f, "Pull request not found")?;
+                writeln!(f, "  Repository: {}", repo)?;
+                writeln!(f, "  Pull request: #{}", number)?;
+                writeln!(f)?;
+                if *has_token {
+                    writeln!(f, "  No pull request with this number exists.")?;
+                } else {
+                    writeln!(f, "  The repository is private or requires authentication.")?;
+                    writeln!(f, "  Try: export GITHUB_TOKEN=$(gh auth token)")?;
+                }
+            }
         }
         Ok(())
     }
@@ -238,6 +286,16 @@ struct Release {
 }
 
 #[derive(Debug, Deserialize)]
+struct PullRequest {
+    head: PullRequestHead,
+}
+
+#[derive(Debug, Deserialize)]
+struct PullRequestHead {
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct Asset {
     id: u64,
     name: String,
@@ -257,6 +315,9 @@ pub struct GitHubClient {
     token: Option<String>,
     /// Base URL for API requests (either custom API or GitHub API)
     api: String,
+    /// Base URL for repository source requests (commits and tarballs), which
+    /// the ampup API does not proxy
+    source_api: String,
     rate_limiter: Arc<GitHubRateLimiter>,
 }
 
@@ -274,6 +335,7 @@ impl GitHubClient {
             .context("Failed to create request client")?;
 
         let api = release_api_base(&repo);
+        let source_api = format!("{}/repos/{}", GITHUB_API_URL, repo);
 
         let rate_limiter = Arc::new(GitHubRateLimiter::new(github_token.is_some()));
 
@@ -282,6 +344,7 @@ impl GitHubClient {
             repo,
             token: github_token,
             api,
+            source_api,
             rate_limiter,
         })
     }
@@ -302,9 +365,15 @@ impl GitHubClient {
             client,
             repo: "test/repo".to_string(),
             token: github_token,
+            source_api: api_base.clone(),
             api: api_base,
             rate_limiter,
         })
+    }
+
+    /// GitHub repository in format `owner/repo`
+    pub fn repo(&self) -> &str {
+        &self.repo
     }
 
     /// Get the latest release version
@@ -535,6 +604,186 @@ impl GitHubClient {
             .context("Failed to parse release response")?;
 
         Ok(release)
+    }
+
+    /// Resolve a git ref (tag, branch, or commit) to its full commit SHA.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`GitHubError::RefNotFound`] when the ref does not exist,
+    /// [`GitHubError::AuthFailed`] on 401 or 403, [`GitHubError::RateLimited`]
+    /// when rate limited, and [`GitHubError::HttpError`] on any other failed
+    /// status or when the request cannot be sent.
+    pub async fn resolve_commit(&self, git_ref: &str) -> Result<String> {
+        let url = format!("{}/commits/{}", self.source_api, git_ref);
+
+        let response = self
+            .send_with_rate_limit(
+                || {
+                    self.client
+                        .get(&url)
+                        .header(reqwest::header::ACCEPT, "application/vnd.github.sha")
+                },
+                "Failed to resolve git ref",
+            )
+            .await?;
+
+        let status = response.status();
+        match status {
+            // GitHub answers 422 when the ref does not name a commit
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::UNPROCESSABLE_ENTITY => {
+                return Err(GitHubError::RefNotFound {
+                    repo: self.repo.clone(),
+                    git_ref: git_ref.to_string(),
+                    has_token: self.token.is_some(),
+                }
+                .into());
+            }
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                return Err(GitHubError::AuthFailed {
+                    status_code: status.as_u16(),
+                    repo: self.repo.clone(),
+                    url,
+                }
+                .into());
+            }
+            _ if !status.is_success() => {
+                // The status is the error being reported; the body is extra
+                // detail, and failing to read it must not hide the status
+                let body = response.text().await.unwrap_or_default();
+                return Err(GitHubError::HttpError {
+                    repo: self.repo.clone(),
+                    status_code: status.as_u16(),
+                    url,
+                    body,
+                }
+                .into());
+            }
+            _ => {}
+        }
+
+        let commit = response
+            .text()
+            .await
+            .context("Failed to read commit SHA response")?;
+
+        Ok(commit.trim().to_string())
+    }
+
+    /// Resolve a pull request to the commit at the head of its branch.
+    ///
+    /// This works for pull requests from forks and for closed or merged pull
+    /// requests, because GitHub keeps their head commits reachable from the
+    /// base repository.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`GitHubError::PullRequestNotFound`] when the pull request
+    /// does not exist, [`GitHubError::AuthFailed`] on 401 or 403,
+    /// [`GitHubError::RateLimited`] when rate limited,
+    /// [`GitHubError::HttpError`] on any other failed status or when the
+    /// request cannot be sent, and when the response is not a pull request.
+    pub async fn resolve_pull_request_head(&self, number: NonZeroU32) -> Result<String> {
+        let url = format!("{}/pulls/{}", self.source_api, number);
+
+        let response = self
+            .send_with_rate_limit(|| self.client.get(&url), "Failed to fetch pull request")
+            .await?;
+
+        let status = response.status();
+        match status {
+            reqwest::StatusCode::NOT_FOUND => {
+                return Err(GitHubError::PullRequestNotFound {
+                    repo: self.repo.clone(),
+                    number,
+                    has_token: self.token.is_some(),
+                }
+                .into());
+            }
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                return Err(GitHubError::AuthFailed {
+                    status_code: status.as_u16(),
+                    repo: self.repo.clone(),
+                    url,
+                }
+                .into());
+            }
+            _ if !status.is_success() => {
+                // The status is the error being reported; the body is extra
+                // detail, and failing to read it must not hide the status
+                let body = response.text().await.unwrap_or_default();
+                return Err(GitHubError::HttpError {
+                    repo: self.repo.clone(),
+                    status_code: status.as_u16(),
+                    url,
+                    body,
+                }
+                .into());
+            }
+            _ => {}
+        }
+
+        let pull_request: PullRequest = response
+            .json()
+            .await
+            .context("Failed to parse pull request response")?;
+
+        Ok(pull_request.head.sha)
+    }
+
+    /// Download the gzipped source tarball of the repository at a commit into
+    /// `destination`, writing it chunk by chunk as it arrives.
+    ///
+    /// The tarball holds the whole repository, so it is streamed to a file
+    /// instead of being held in memory.
+    ///
+    /// # Errors
+    ///
+    /// Fails with [`GitHubError::DownloadFailed`] on a failed status,
+    /// [`GitHubError::RateLimited`] when rate limited, or when the request, the
+    /// body stream, or a write to `destination` fails. `destination` may hold a
+    /// partial tarball after a failure.
+    pub async fn download_source_tarball(
+        &self,
+        commit: &str,
+        destination: &mut tokio::fs::File,
+    ) -> Result<()> {
+        let url = format!("{}/tarball/{}", self.source_api, commit);
+
+        let response = self
+            .send_with_rate_limit(
+                || self.client.get(&url),
+                "Failed to download source tarball",
+            )
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(GitHubError::DownloadFailed {
+                repo: self.repo.clone(),
+                asset_name: "source tarball".to_string(),
+                status_code: response.status().as_u16(),
+                url,
+            }
+            .into());
+        }
+
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Error while downloading source tarball")?;
+            destination
+                .write_all(&chunk)
+                .await
+                .context("Failed to write source tarball")?;
+        }
+
+        // `tokio::fs::File` buffers writes, so data not flushed here could be
+        // missing when the file is read back
+        destination
+            .flush()
+            .await
+            .context("Failed to write source tarball")?;
+
+        Ok(())
     }
 
     /// Download a release asset by name.

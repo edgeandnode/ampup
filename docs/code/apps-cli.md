@@ -59,6 +59,8 @@ These patterns ensure:
 
 **REQUIRED**: Results and informational messages go to **stdout** via `success!`, `info!`, and `detail!` macros. Warnings go to **stderr** via `warn!`. Errors are handled by the top-level error handler which outputs to **stderr**.
 
+**Exception — `ampup skills`**: the skills commands follow the amp CLI rule instead. Their result is the only thing on stdout, printed as text or as JSON with `--json` by one shared print path (`print_result` in `ampup/src/commands/skills.rs`). Status goes to stderr through `info_stderr!` and `detail_stderr!`, and warnings through `warn!`.
+
 ### 3. Styled Terminal Output
 
 **REQUIRED**: All styled output uses the `console` crate for colors, bold text, and dimming. The UI macros and styling helpers provide consistent formatting.
@@ -83,6 +85,8 @@ All macros are defined in `ampup/src/ui.rs`:
 | `info!` | stdout | `→` cyan | Normal |
 | `warn!` | stderr | `⚠` yellow bold | Normal |
 | `detail!` | stdout | 2-space indent | Dimmed |
+| `info_stderr!` | stderr | `→` cyan | Normal |
+| `detail_stderr!` | stderr | 2-space indent | Dimmed |
 
 **Usage examples**:
 
@@ -122,14 +126,19 @@ ui::info!("Installation directory: {}", ui::path("/home/user/.amp"));
 
 **Location**: `ampup/src/main.rs`
 
-The top-level error handler catches all errors and formats them with a red bold `✗` prefix to stderr:
+The top-level error handler catches all errors and formats them with a red bold `✗` prefix to stderr, followed by one `Caused by:` line per error in its source chain:
 
 ```rust
 #[tokio::main]
 async fn main() {
     if let Err(e) = run().await {
-        // Print the error with custom formatting
+        // Print the error with some custom formatting
         eprintln!("{} {}", style("✗").red().bold(), e);
+        // Typed errors describe one level each and carry their cause as a
+        // source, so print the whole chain
+        for cause in e.chain().skip(1) {
+            eprintln!("  {} {}", style("Caused by:").dim(), cause);
+        }
         std::process::exit(1);
     }
 }
@@ -144,6 +153,8 @@ async fn main() {
 - Implement `std::fmt::Display` with multi-line formatting (context, details, suggestions)
 - Implement `std::error::Error` trait
 - Convert to `anyhow::Error` via `.into()`
+
+**Exception — `ampup skills`**: the skills code (`ampup/src/skills.rs`, `ampup/src/skills/`, `ampup/src/commands/skills.rs`) declares its errors with `#[derive(Debug, thiserror::Error)]`, one error type per fallible function, declared right after it, with `#[source]` chains and messages that describe a single level. The top-level handler prints the chain.
 
 ### Error Propagation
 

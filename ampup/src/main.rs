@@ -1,4 +1,11 @@
-use ampup::{DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO, DEFAULT_SELF_REPO, commands};
+use ampup::{
+    DEFAULT_DOWNLOAD_JOBS, DEFAULT_REPO, DEFAULT_SELF_REPO,
+    commands::{
+        self,
+        skills::{SkillSelection, SkillsSourceArgs},
+    },
+    skills::{Agent, Scope, SkillName},
+};
 use console::style;
 
 /// The ampd installer and version manager
@@ -152,6 +159,12 @@ enum Commands {
         jobs: usize,
     },
 
+    /// Install and manage agent skills from the amp repository
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
+
     /// Manage the ampup executable
     #[command(name = "self")]
     SelfCmd {
@@ -163,6 +176,103 @@ enum Commands {
     Adbc {
         #[command(subcommand)]
         command: AdbcCommands,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+enum SkillsCommands {
+    /// Install skills (default: the skills of the active ampd version)
+    Add {
+        /// Skill to install; repeat for several. Prompts when neither --skill nor --all is given
+        #[arg(short, long = "skill", value_name = "NAME")]
+        skills: Vec<SkillName>,
+
+        /// Install every skill
+        #[arg(long, conflicts_with = "skills")]
+        all: bool,
+
+        /// List the available skills without installing them
+        #[arg(short, long, conflicts_with_all = ["skills", "all", "agents", "global"])]
+        list: bool,
+
+        /// Agent to install for; repeat for several. Prompts when not given
+        #[arg(short, long = "agent", value_name = "AGENT")]
+        agents: Vec<Agent>,
+
+        /// Install in the home directory instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+
+        #[command(flatten)]
+        source: SkillsSourceArgs,
+    },
+
+    /// List skills installed by ampup
+    List {
+        /// Only list skills for this agent; repeat for several (default: all agents)
+        #[arg(short, long = "agent", value_name = "AGENT")]
+        agents: Vec<Agent>,
+
+        /// List skills in the home directory instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Reinstall skills installed by ampup (default: from the active ampd version)
+    Update {
+        /// Skill to update; repeat for several (default: all installed skills)
+        #[arg(short, long = "skill", value_name = "NAME")]
+        skills: Vec<SkillName>,
+
+        /// Only update skills for this agent; repeat for several (default: all agents)
+        #[arg(short, long = "agent", value_name = "AGENT")]
+        agents: Vec<Agent>,
+
+        /// Update skills in the home directory instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+
+        #[command(flatten)]
+        source: SkillsSourceArgs,
+    },
+
+    /// Remove skills installed by ampup
+    Remove {
+        /// Skill to remove; repeat for several. Prompts when neither --skill nor --all is given
+        #[arg(short, long = "skill", value_name = "NAME")]
+        skills: Vec<SkillName>,
+
+        /// Remove every skill installed by ampup
+        #[arg(long, conflicts_with = "skills")]
+        all: bool,
+
+        /// Only remove skills for this agent; repeat for several (default: all agents)
+        #[arg(short, long = "agent", value_name = "AGENT")]
+        agents: Vec<Agent>,
+
+        /// Remove skills from the home directory instead of the current project
+        #[arg(short, long)]
+        global: bool,
+
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -246,6 +356,11 @@ async fn main() {
     if let Err(e) = run().await {
         // Print the error with some custom formatting
         eprintln!("{} {}", style("✗").red().bold(), e);
+        // Typed errors describe one level each and carry their cause as a
+        // source, so print the whole chain
+        for cause in e.chain().skip(1) {
+            eprintln!("  {} {}", style("Caused by:").dim(), cause);
+        }
         std::process::exit(1);
     }
 }
@@ -322,6 +437,52 @@ async fn run() -> anyhow::Result<()> {
             commands::install::run(install_dir, repo, github_token, None, arch, platform, jobs)
                 .await?;
         }
+        Some(Commands::Skills { command }) => match command {
+            SkillsCommands::Add {
+                skills,
+                all,
+                list,
+                agents,
+                global,
+                json,
+                source,
+            } => {
+                if list {
+                    commands::skills::list_available(source, json).await?;
+                } else {
+                    let selection = SkillSelection::from_flags(skills, all);
+                    commands::skills::add(source, selection, agents, scope_of(global), json)
+                        .await?;
+                }
+            }
+            SkillsCommands::List {
+                agents,
+                global,
+                json,
+            } => {
+                commands::skills::list(agents, scope_of(global), json).await?;
+            }
+            SkillsCommands::Update {
+                skills,
+                agents,
+                global,
+                json,
+                source,
+            } => {
+                commands::skills::update(source, skills, agents, scope_of(global), json).await?;
+            }
+            SkillsCommands::Remove {
+                skills,
+                all,
+                agents,
+                global,
+                force,
+                json,
+            } => {
+                let selection = SkillSelection::from_flags(skills, all);
+                commands::skills::remove(selection, agents, scope_of(global), force, json).await?;
+            }
+        },
         Some(Commands::SelfCmd { command }) => match command {
             SelfCommands::Update { repo, github_token } => {
                 commands::update::run(repo, github_token).await?;
@@ -381,4 +542,14 @@ async fn run() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// The `--global` flag of the skills commands selects the home directory
+/// instead of the current project.
+fn scope_of(global: bool) -> Scope {
+    if global {
+        Scope::Global
+    } else {
+        Scope::Project
+    }
 }
