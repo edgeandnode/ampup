@@ -10,6 +10,7 @@ pub mod platform;
 pub mod progress;
 pub mod rate_limiter;
 pub mod shell;
+pub mod skills;
 pub mod token;
 pub mod updater;
 pub mod version_manager;

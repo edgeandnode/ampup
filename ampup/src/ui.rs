@@ -28,8 +28,28 @@ macro_rules! detail {
     };
 }
 
+/// Print an info message with a cyan arrow to stderr
+///
+/// For commands whose stdout carries only their result, such as `--json` output.
+macro_rules! info_stderr {
+    ($($arg:tt)*) => {
+        eprintln!("{} {}", console::style("→").cyan(), format!($($arg)*))
+    };
+}
+
+/// Print a dimmed detail message (indented) to stderr
+///
+/// For commands whose stdout carries only their result, such as `--json` output.
+macro_rules! detail_stderr {
+    ($($arg:tt)*) => {
+        eprintln!("  {}", console::style(format!($($arg)*)).dim())
+    };
+}
+
 pub(crate) use detail;
+pub(crate) use detail_stderr;
 pub(crate) use info;
+pub(crate) use info_stderr;
 pub(crate) use success;
 pub(crate) use warning as warn;
 
