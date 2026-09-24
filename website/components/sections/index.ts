@@ -1,0 +1,14 @@
+export { Hero } from "./hero";
+export { LiveSection } from "./live";
+export { CTA } from "./cta";
+export { Engine } from "./engine";
+export { Features } from "./features";
+export { How } from "./how";
+export { Integrations } from "./integrations";
+export { Proof } from "./proof";
+export { Cost } from "./cost";
+export { Storage } from "./storage";
+export { Freshness } from "./freshness";
+export { Try } from "./try";
+export { Docs } from "./docs";
+export { License } from "./license";

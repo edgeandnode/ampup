@@ -1,0 +1,125 @@
+@import "@edgeandnode/eds-react";
+@source "../app";
+@source "../components";
+@source "../data";
+
+
+@theme {
+  --color-brand-500: #2347e5;
+
+  --font-serif: "Newsreader", ui-serif, Georgia, "Times New Roman", serif;
+  --font-sans: "Messina Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono, "Geist Mono"), ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@utility dotgrid {
+  @apply bg-[radial-gradient(color-mix(in_oklab,var(--border-color-default)_30%,transparent)_1.2px,transparent_1.8px)] bg-size-[12px_12px] bg-position-[-6px_-6px] bg-repeat
+}
+
+@utility container {
+  @apply mx-auto max-w-5xl px-4 sm:px-6 lg:px-8
+}
+
+@theme static {
+  --color-on-dark: rgba(255, 255, 255, 0.95);
+  --color-on-dark-muted: rgba(255, 255, 255, 0.8);
+  --color-on-dark-faint: rgba(255, 255, 255, 0.65);
+  --color-success: #087443;
+
+  --spacing-section: clamp(4.5rem, 3.5rem + 4vw, 8rem);
+  --spacing-hero-top: clamp(8rem, 6.8rem + 4vw, 10rem);
+
+  --ease-smooth: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+[data-section] {
+  scroll-margin-top: 5.5rem;
+}
+
+body {
+  @apply text-pretty;
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-serif);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes hero-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--hero-y, 16px));
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.hero-enter {
+  animation: hero-enter 0.7s var(--ease-smooth) both;
+  animation-delay: var(--hero-delay, 0s);
+}
+@keyframes hero-rise {
+  from {
+    transform: translateY(var(--hero-y, 16px));
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+.hero-enter-rise {
+  animation-name: hero-rise;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-enter {
+    animation-delay: 0s !important;
+  }
+}
+
+@font-face {
+  font-family: "Messina Sans";
+  src: url("/fonts/MessinaSans-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Messina Sans";
+  src: url("/fonts/MessinaSans-SemiBold.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+
+::selection {
+  @apply bg-brand-500 text-inverse-default
+}
+
+.elevated { box-shadow: 0 2px 4px rgba(15, 18, 22, 0.05), 0 12px 24px -8px rgba(15, 18, 22, 0.12); }
+
+.crosshair { width: 9px; height: 9px; margin: -4px; }
+.crosshair::before, .crosshair::after { content: ""; position: absolute; background: var(--border-color-default); }
+.crosshair::before { left: 0; right: 0; top: 4px; height: 1px; }
+.crosshair::after { top: 0; bottom: 0; left: 4px; width: 1px; }
+
+
+/* Display step between EDS's 64 and 96. */
+@media (min-width: 64rem) {
+  .lg\:text-80 { font-size: 5rem; line-height: 1.02; }
+}
